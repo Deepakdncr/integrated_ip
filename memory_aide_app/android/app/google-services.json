@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1055214348433",
+    "project_id": "ip-memory-aide",
+    "storage_bucket": "ip-memory-aide.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1055214348433:android:d2feedee6d38c5daf93730",
+        "android_client_info": {
+          "package_name": "com.example.memory_aide_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDGCRfHgH8bKFpuGIl4l6yObzG9tnnbACk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
