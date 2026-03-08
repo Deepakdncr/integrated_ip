@@ -25,7 +25,28 @@ class AuthService {
   /// Get stored patient ID
   static Future<String?> getPatientId() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_patientIdKey);
+    String? pid = prefs.getString(_patientIdKey);
+    if (pid != null && pid.isNotEmpty) return pid;
+
+    // Fallback if missing
+    final userId = prefs.getString(_userIdKey);
+    final token = prefs.getString(_tokenKey);
+    if (userId != null && token != null) {
+      try {
+        final response = await http.get(
+          Uri.parse(ApiConfig.patientUrl(userId)),
+          headers: {'Authorization': 'Bearer $token'},
+        );
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data['id'] != null) {
+            pid = data['id'];
+            await prefs.setString(_patientIdKey, pid!);
+          }
+        }
+      } catch (_) {}
+    }
+    return pid;
   }
 
   /// Get stored email
@@ -49,13 +70,38 @@ class AuthService {
     };
   }
 
-  /// Register
-  static Future<String?> register(String email, String password) async {
+  /// Request OTP for Registration
+  static Future<String?> requestRegisterOtp(
+      String email, String password) async {
     try {
       final response = await http.post(
-        Uri.parse(ApiConfig.registerUrl),
+        Uri.parse(ApiConfig.registerRequestOtpUrl),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'password': password}),
+        body: jsonEncode({
+          'email': email,
+          'password': password,
+        }),
+      );
+      if (response.statusCode == 200) return null;
+      final data = jsonDecode(response.body);
+      return data['detail'] ?? 'Failed to send OTP.';
+    } catch (e) {
+      return 'Connection error. Is the server running?';
+    }
+  }
+
+  /// Verify OTP and Complete Registration
+  static Future<String?> verifyRegister(
+      String email, String password, String otp) async {
+    try {
+      final response = await http.post(
+        Uri.parse(ApiConfig.registerVerifyUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'password': password,
+          'otp': otp,
+        }),
       );
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -64,6 +110,43 @@ class AuthService {
       }
       final data = jsonDecode(response.body);
       return data['detail'] ?? 'Registration failed.';
+    } catch (e) {
+      return 'Connection error. Is the server running?';
+    }
+  }
+
+  /// Request OTP for Forgot Password
+  static Future<String?> requestForgotPasswordOtp(String email) async {
+    try {
+      final response = await http.post(
+        Uri.parse(ApiConfig.forgotPasswordOtpUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email}),
+      );
+      if (response.statusCode == 200) return null;
+      final data = jsonDecode(response.body);
+      return data['detail'] ?? 'Failed to send OTP.';
+    } catch (e) {
+      return 'Connection error. Is the server running?';
+    }
+  }
+
+  /// Reset Password with OTP
+  static Future<String?> resetPassword(
+      String email, String otp, String newPassword) async {
+    try {
+      final response = await http.post(
+        Uri.parse(ApiConfig.resetPasswordUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'otp': otp,
+          'new_password': newPassword,
+        }),
+      );
+      if (response.statusCode == 200) return null;
+      final data = jsonDecode(response.body);
+      return data['detail'] ?? 'Failed to reset password.';
     } catch (e) {
       return 'Connection error. Is the server running?';
     }

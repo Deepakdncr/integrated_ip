@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import '../config/theme.dart';
 
 /// Quick action button for the dashboard grid.
+/// Large touch target, card-based, caregiver-friendly.
 class QuickActionCard extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -21,15 +23,21 @@ class QuickActionCard extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(CareSoulTheme.radiusLg),
+        splashColor: color.withValues(alpha: 0.1),
+        highlightColor: color.withValues(alpha: 0.05),
         child: Container(
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(CareSoulTheme.radiusLg),
+            border: Border.all(
+              color: color.withValues(alpha: 0.1),
+              width: 1.5,
+            ),
             boxShadow: [
               BoxShadow(
-                color: color.withValues(alpha: 0.15),
-                blurRadius: 12,
+                color: color.withValues(alpha: 0.1),
+                blurRadius: 16,
                 offset: const Offset(0, 4),
               ),
             ],
@@ -38,22 +46,31 @@ class QuickActionCard extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              // Icon container with gradient background
               Container(
-                padding: const EdgeInsets.all(14),
+                padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(14),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      color.withValues(alpha: 0.15),
+                      color.withValues(alpha: 0.05),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(16),
                 ),
-                child: Icon(icon, size: 32, color: color),
+                child: Icon(icon, size: 34, color: color),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
               Text(
                 label,
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
                   color: Colors.grey[800],
+                  height: 1.2,
                 ),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,

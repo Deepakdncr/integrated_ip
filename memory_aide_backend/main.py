@@ -3,7 +3,7 @@ CareSoul – Smart Medication Audio Assistant
 FastAPI Backend with PostgreSQL
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -14,8 +14,31 @@ import hashlib
 import jwt
 import os
 import shutil
+import base64
+import json
+import random
+from openai import OpenAI
 from datetime import datetime, timedelta
 from typing import Optional
+from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
+from fastapi import BackgroundTasks
+from dotenv import load_dotenv
+
+load_dotenv()
+
+conf = ConnectionConfig(
+    MAIL_USERNAME=os.environ.get("MAIL_USERNAME", "your_email@gmail.com"),
+    MAIL_PASSWORD=os.environ.get("MAIL_PASSWORD", "your_app_password"),
+    MAIL_FROM=os.environ.get("MAIL_FROM", "your_email@gmail.com"),
+    MAIL_PORT=587,
+    MAIL_SERVER="smtp.gmail.com",
+    MAIL_FROM_NAME="CareSoul App",
+    MAIL_STARTTLS=True,
+    MAIL_SSL_TLS=False,
+    USE_CREDENTIALS=True,
+    VALIDATE_CERTS=True
+)
+fm = FastMail(conf)
 
 # ============================================================
 # APP SETUP
@@ -97,6 +120,23 @@ class AuthRequest(BaseModel):
     email: str
     password: str
 
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+class RegisterVerifyRequest(BaseModel):
+    email: str
+    password: str
+    otp: str
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    email: str
+    otp: str
+    new_password: str
+
 
 class PatientProfileUpdate(BaseModel):
     name: Optional[str] = None
@@ -112,6 +152,7 @@ class ReminderCreate(BaseModel):
     time_of_day: str
     repeat_count: int = 2
     repeat_interval_minutes: int = 5
+    food_instruction: str = "Anytime"
     voice_profile_id: Optional[str] = None
 
 
@@ -123,6 +164,7 @@ class ReminderUpdate(BaseModel):
     is_active: Optional[bool] = None
     repeat_count: Optional[int] = None
     repeat_interval_minutes: Optional[int] = None
+    food_instruction: Optional[str] = None
     voice_profile_id: Optional[str] = None
 
 
@@ -202,6 +244,7 @@ def create_tables():
             is_active BOOLEAN DEFAULT TRUE,
             repeat_count INTEGER DEFAULT 2,
             repeat_interval_minutes INTEGER DEFAULT 5,
+            food_instruction TEXT DEFAULT 'Anytime',
             voice_profile_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -224,11 +267,17 @@ def create_tables():
         CREATE TABLE IF NOT EXISTS voice_profiles (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            patient_id TEXT,
             name TEXT NOT NULL,
             file_url TEXT NOT NULL,
+            scheduled_time TEXT,
+            is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute("ALTER TABLE voice_profiles ADD COLUMN IF NOT EXISTS scheduled_time TEXT")
+    cur.execute("ALTER TABLE voice_profiles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
+    cur.execute("ALTER TABLE voice_profiles ADD COLUMN IF NOT EXISTS patient_id TEXT")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS music_schedules (
@@ -254,6 +303,27 @@ def create_tables():
         )
     """)
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS otps (
+            id TEXT PRIMARY KEY,
+            identifier TEXT NOT NULL,
+            otp_code TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Try altering existing users table for new fields
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN phone_number TEXT UNIQUE;")
+    except Exception:
+        conn.rollback()
+    
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT FALSE;")
+    except Exception:
+        conn.rollback()
+
     conn.commit()
     cur.close()
     conn.close()
@@ -269,29 +339,65 @@ def home():
     return {"status": "CareSoul Backend Running", "version": "2.0.0"}
 
 
-@app.post("/register")
-def register(auth: AuthRequest):
+@app.post("/request-register-otp")
+def request_register_otp(req: RegisterRequest, background_tasks: BackgroundTasks):
     conn = get_connection()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT id FROM users WHERE email=%s", (auth.email,))
+        cur.execute("SELECT id FROM users WHERE email=%s", (req.email,))
         if cur.fetchone():
             raise HTTPException(status_code=400, detail="Email already registered.")
 
+        otp_code = str(random.randint(100000, 999999))
+        print(f"\n==============================================")
+        print(f"   [DEMO MODE] OTP FOR {req.email} IS: {otp_code}   ")
+        print(f"==============================================\n")
+
+        # Send Real Email
+        message = MessageSchema(
+            subject="CareSoul account - Verification Code",
+            recipients=[req.email],
+            body=f"Welcome to CareSoul! Your account verification code is: {otp_code}",
+            subtype=MessageType.plain
+        )
+        background_tasks.add_task(fm.send_message, message)
+
+        cur.execute(
+            "INSERT INTO otps (id, identifier, otp_code, expires_at) VALUES (%s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '10 minutes')",
+            (str(uuid.uuid4()), req.email, otp_code)
+        )
+        conn.commit()
+        return {"message": "OTP sent successfully."}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.post("/verify-register")
+def verify_register(req: RegisterVerifyRequest):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM otps WHERE identifier=%s AND otp_code=%s AND expires_at > CURRENT_TIMESTAMP", 
+                    (req.email, req.otp))
+        otp_row = cur.fetchone()
+        if not otp_row:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+
+        cur.execute("DELETE FROM otps WHERE id=%s", (otp_row[0],))
+        
         user_id = str(uuid.uuid4())
         cur.execute(
-            "INSERT INTO users (id, email, password_hash) VALUES (%s, %s, %s)",
-            (user_id, auth.email, hash_password(auth.password)),
+            "INSERT INTO users (id, email, password_hash, is_verified) VALUES (%s, %s, %s, TRUE)",
+            (user_id, req.email, hash_password(req.password)),
         )
 
-        # Create default patient profile
         patient_id = str(uuid.uuid4())
         cur.execute(
             "INSERT INTO patient_profiles (id, user_id, name, age) VALUES (%s, %s, %s, %s)",
             (patient_id, user_id, "Patient", 0),
         )
 
-        # Create default device status
         device_id = str(uuid.uuid4())
         cur.execute(
             "INSERT INTO device_status (id, user_id) VALUES (%s, %s)",
@@ -299,19 +405,74 @@ def register(auth: AuthRequest):
         )
 
         conn.commit()
-        token = create_token(user_id, auth.email)
+        token = create_token(user_id, req.email)
         return {
             "message": "Registration successful",
             "token": token,
             "user_id": user_id,
-            "email": auth.email,
-            "patient_id": patient_id,
+            "patient_id": patient_id
         }
     except HTTPException:
         raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.post("/forgot-password/request-otp")
+def forgot_password_otp(req: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM users WHERE email=%s", (req.email,))
+        user = cur.fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="Email not registered.")
+
+        otp_code = str(random.randint(100000, 999999))
+        print(f"\n==============================================")
+        print(f"   [DEMO MODE] OTP FOR {req.email} IS: {otp_code}   ")
+        print(f"==============================================\n")
+
+        # Send Real Email
+        message = MessageSchema(
+            subject="CareSoul - Password Reset Code",
+            recipients=[req.email],
+            body=f"You requested a password reset. Your OTP is: {otp_code}",
+            subtype=MessageType.plain
+        )
+        background_tasks.add_task(fm.send_message, message)
+
+        cur.execute(
+            "INSERT INTO otps (id, identifier, otp_code, expires_at) VALUES (%s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '10 minutes')",
+            (str(uuid.uuid4()), req.email, otp_code)
+        )
+        conn.commit()
+        return {"message": "Reset OTP sent"}
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.post("/forgot-password/reset")
+def reset_password(req: ResetPasswordRequest):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT id FROM otps WHERE identifier=%s AND otp_code=%s AND expires_at > CURRENT_TIMESTAMP", 
+                    (req.email, req.otp))
+        otp_row = cur.fetchone()
+        if not otp_row:
+            raise HTTPException(status_code=400, detail="Invalid or expired OTP.")
+
+        cur.execute("DELETE FROM otps WHERE id=%s", (otp_row[0],))
+        cur.execute("UPDATE users SET password_hash=%s WHERE email=%s", 
+                    (hash_password(req.new_password), req.email))
+        conn.commit()
+        return {"message": "Password reset successfully"}
     finally:
         cur.close()
         conn.close()
@@ -426,41 +587,80 @@ async def upload_patient_photo(user_id: str, file: UploadFile = File(...), auth:
 @app.post("/ocr/prescription")
 async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(verify_token)):
     """
-    Accepts prescription image, performs OCR, returns structured medicine data.
-    In production, use Tesseract or a vision model.
-    For now, returns a demo parsed result.
+    Accepts prescription image, performs OCR via OpenRouter, returns structured medicine data.
     """
     ext = file.filename.split(".")[-1] if file.filename else "jpg"
     filename = f"{uuid.uuid4()}.{ext}"
     filepath = os.path.join(UPLOAD_DIR, "prescriptions", filename)
+    
+    # Save the file first
     with open(filepath, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # --- OCR Processing ---
-    # In production, use pytesseract or Google Vision API:
-    # import pytesseract
-    # from PIL import Image
-    # text = pytesseract.image_to_string(Image.open(filepath))
-    # Then parse 'text' into structured data.
-
-    # Demo structured result:
-    parsed_medicines = [
+    # Convert to base64 for API
+    with open(filepath, "rb") as image_file:
+        base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+        
+    try:
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+        )
+        
+        prompt = '''
+        You are an expert medical assistant reading a prescription image.
+        Extract the medicines listed in the image. 
+        For each medicine, determine the medicine_name, dosage, frequency, and an estimated time_of_day (e.g., "08:00").
+        
+        Return ONLY valid JSON with this exact structure, with no markdown formatting or backticks:
         {
-            "medicine_name": "Paracetamol",
-            "dosage": "500 mg",
-            "frequency": "Twice daily",
-            "time_of_day": "08:00, 20:00",
-        },
-        {
-            "medicine_name": "Metformin",
-            "dosage": "250 mg",
-            "frequency": "Once daily",
-            "time_of_day": "09:00",
-        },
-    ]
-
-    return {"medicines": parsed_medicines, "image_url": f"/uploads/prescriptions/{filename}"}
-
+          "medicines": [
+            {
+              "medicine_name": "Name",
+              "dosage": "1 pill",
+              "frequency": "Daily",
+              "time_of_day": "08:00"
+            }
+          ]
+        }
+        '''
+        
+        completion = client.chat.completions.create(
+            extra_headers={
+                "HTTP-Referer": "http://localhost:8000",
+                "X-OpenRouter-Title": "CareSoul",
+            },
+            model="google/gemma-3-27b-it:free",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+        
+        response_text = completion.choices[0].message.content.strip()
+        
+        # Strip potential markdown formatting
+        if response_text.startswith("```json"):
+            response_text = response_text[7:-3].strip()
+        elif response_text.startswith("```"):
+            response_text = response_text[3:-3].strip()
+            
+        data = json.loads(response_text)
+        return {"medicines": data.get("medicines", []), "image_url": f"/uploads/prescriptions/{filename}"}
+        
+    except Exception as e:
+        print(f"OCR Parsing Error: {e}")
+        raise HTTPException(status_code=400, detail="Could not extract medicines. Please upload a clear image.")
 
 # ============================================================
 # REMINDER ROUTES
@@ -490,12 +690,12 @@ def create_reminder(reminder: ReminderCreate, auth: dict = Depends(verify_token)
         cur.execute(
             """INSERT INTO reminders
             (id, user_id, patient_id, medicine_name, dosage, frequency, time_of_day,
-             repeat_count, repeat_interval_minutes, voice_profile_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+             repeat_count, repeat_interval_minutes, food_instruction, voice_profile_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (rid, auth["user_id"], reminder.patient_id, reminder.medicine_name,
              reminder.dosage, reminder.frequency, reminder.time_of_day,
              reminder.repeat_count, reminder.repeat_interval_minutes,
-             reminder.voice_profile_id),
+             reminder.food_instruction, reminder.voice_profile_id),
         )
         conn.commit()
         return {"message": "Reminder created", "id": rid}
@@ -511,7 +711,7 @@ def update_reminder(reminder_id: str, update: ReminderUpdate, auth: dict = Depen
     try:
         fields, values = [], []
         for field_name in ["medicine_name", "dosage", "frequency", "time_of_day",
-                           "is_active", "repeat_count", "repeat_interval_minutes", "voice_profile_id"]:
+                           "is_active", "repeat_count", "repeat_interval_minutes", "food_instruction", "voice_profile_id"]:
             val = getattr(update, field_name)
             if val is not None:
                 fields.append(f"{field_name}=%s")
@@ -635,7 +835,13 @@ def get_voices(user_id: str, auth: dict = Depends(verify_token)):
 
 
 @app.post("/voices/upload")
-async def upload_voice(name: str = "Voice Recording", file: UploadFile = File(...), auth: dict = Depends(verify_token)):
+async def upload_voice(
+    name: str = Form("Voice Recording"),
+    patient_id: str = Form(""),
+    scheduled_time: str = Form("08:00"),
+    file: UploadFile = File(...), 
+    auth: dict = Depends(verify_token)
+):
     ext = file.filename.split(".")[-1] if file.filename else "wav"
     filename = f"{uuid.uuid4()}.{ext}"
     filepath = os.path.join(UPLOAD_DIR, "voices", filename)
@@ -648,11 +854,26 @@ async def upload_voice(name: str = "Voice Recording", file: UploadFile = File(..
     try:
         vid = str(uuid.uuid4())
         cur.execute(
-            "INSERT INTO voice_profiles (id, user_id, name, file_url) VALUES (%s, %s, %s, %s)",
-            (vid, auth["user_id"], name, file_url),
+            """INSERT INTO voice_profiles (id, user_id, patient_id, name, file_url, scheduled_time) 
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (vid, auth["user_id"], patient_id, name, file_url, scheduled_time),
         )
         conn.commit()
         return {"message": "Voice uploaded", "id": vid, "file_url": file_url}
+    finally:
+        cur.close()
+        conn.close()
+
+@app.put("/voices/{voice_id}")
+def update_voice(voice_id: str, update: dict, auth: dict = Depends(verify_token)):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        if "is_active" in update:
+            cur.execute("UPDATE voice_profiles SET is_active=%s WHERE id=%s", (update["is_active"], voice_id))
+            conn.commit()
+            return {"message": "Voice updated"}
+        raise HTTPException(status_code=400, detail="Invalid request")
     finally:
         cur.close()
         conn.close()
@@ -691,9 +912,9 @@ def get_music(user_id: str, auth: dict = Depends(verify_token)):
 
 @app.post("/music/upload")
 async def upload_music(
-    patient_id: str = "",
-    title: str = "Music",
-    scheduled_time: str = "08:00",
+    patient_id: str = Form(""),
+    title: str = Form("Music"),
+    scheduled_time: str = Form("08:00"),
     file: UploadFile = File(...),
     auth: dict = Depends(verify_token),
 ):
@@ -815,7 +1036,7 @@ def get_pending_actions(device_id: str):
 
         # Get active reminders for current time
         cur.execute(
-            "SELECT medicine_name, dosage, repeat_count, repeat_interval_minutes, voice_profile_id "
+            "SELECT medicine_name, dosage, repeat_count, repeat_interval_minutes, food_instruction, voice_profile_id "
             "FROM reminders WHERE user_id=%s AND is_active=TRUE AND time_of_day=%s",
             (user_id, now),
         )
@@ -832,6 +1053,7 @@ def get_pending_actions(device_id: str):
                 "dosage": r["dosage"],
                 "repeat": r["repeat_count"],
                 "interval_minutes": r["repeat_interval_minutes"],
+                "food_instruction": r["food_instruction"],
                 "voice_file": voice_file,
             })
 

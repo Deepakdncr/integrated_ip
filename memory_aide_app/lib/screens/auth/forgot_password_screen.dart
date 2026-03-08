@@ -2,44 +2,29 @@ import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../widgets/care_soul_logo.dart';
 import '../../config/theme.dart';
-import 'login_screen.dart';
-import 'otp_verification_screen.dart';
+import 'reset_password_screen.dart';
 
-/// Registration screen – caregiver account creation.
-class RegisterScreen extends StatefulWidget {
-  const RegisterScreen({super.key});
+class ForgotPasswordScreen extends StatefulWidget {
+  const ForgotPasswordScreen({super.key});
 
   @override
-  State<RegisterScreen> createState() => _RegisterScreenState();
+  State<ForgotPasswordScreen> createState() => _ForgotPasswordScreenState();
 }
 
-class _RegisterScreenState extends State<RegisterScreen> {
+class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _emailCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
-  final _confirmCtrl = TextEditingController();
   bool _loading = false;
-  bool _obscure = true;
   String? _error;
 
   @override
   void dispose() {
     _emailCtrl.dispose();
-    _passCtrl.dispose();
-    _confirmCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _register() async {
-    if (_emailCtrl.text.isEmpty || _passCtrl.text.isEmpty) {
-      setState(() => _error = 'Please fill in all fields.');
-      return;
-    }
-    if (_passCtrl.text != _confirmCtrl.text) {
-      setState(() => _error = 'Passwords do not match.');
-      return;
-    }
-    if (_passCtrl.text.length < 6) {
-      setState(() => _error = 'Password must be at least 6 characters.');
+  Future<void> _requestOtp() async {
+    if (_emailCtrl.text.isEmpty) {
+      setState(() => _error = 'Please enter your registered Email address.');
       return;
     }
     setState(() {
@@ -47,18 +32,15 @@ class _RegisterScreenState extends State<RegisterScreen> {
       _error = null;
     });
 
-    final err = await AuthService.requestRegisterOtp(
-        _emailCtrl.text.trim(), _passCtrl.text.trim());
+    final err =
+        await AuthService.requestForgotPasswordOtp(_emailCtrl.text.trim());
 
     if (!mounted) return;
     if (err == null) {
       Navigator.push(
         context,
         MaterialPageRoute(
-          builder: (_) => OtpVerificationScreen(
-            email: _emailCtrl.text.trim(),
-            password: _passCtrl.text.trim(),
-          ),
+          builder: (_) => ResetPasswordScreen(email: _emailCtrl.text.trim()),
         ),
       );
       setState(() => _loading = false);
@@ -73,6 +55,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(title: const Text('Forgot Password')),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -81,8 +64,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
               children: [
                 const CareSoulLogo(size: 80, showSubtitle: false),
                 const SizedBox(height: 32),
-
-                // ── Register Card ──
                 Container(
                   decoration: CareSoulTheme.cardDecoration,
                   padding: const EdgeInsets.all(24),
@@ -90,14 +71,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       const Text(
-                        'Create Account',
+                        'Reset Password',
                         style: TextStyle(
                             fontSize: 24, fontWeight: FontWeight.w800),
                         textAlign: TextAlign.center,
                       ),
                       const SizedBox(height: 6),
                       const Text(
-                        'Start managing care for your loved ones',
+                        'Enter your registered email address to receive a reset OTP',
                         style: TextStyle(
                             fontSize: 14, color: CareSoulTheme.textSecondary),
                         textAlign: TextAlign.center,
@@ -107,38 +88,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
                         controller: _emailCtrl,
                         style: const TextStyle(fontSize: 17),
                         decoration: const InputDecoration(
-                          labelText: 'Email',
+                          labelText: 'Email Address',
                           prefixIcon: Icon(Icons.email_outlined),
                         ),
                         keyboardType: TextInputType.emailAddress,
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _passCtrl,
-                        obscureText: _obscure,
-                        style: const TextStyle(fontSize: 17),
-                        decoration: InputDecoration(
-                          labelText: 'Password',
-                          prefixIcon: const Icon(Icons.lock_outline),
-                          suffixIcon: IconButton(
-                            icon: Icon(_obscure
-                                ? Icons.visibility_rounded
-                                : Icons.visibility_off_rounded),
-                            onPressed: () =>
-                                setState(() => _obscure = !_obscure),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _confirmCtrl,
-                        obscureText: _obscure,
-                        style: const TextStyle(fontSize: 17),
-                        decoration: const InputDecoration(
-                          labelText: 'Confirm Password',
-                          prefixIcon: Icon(Icons.lock_outline),
-                        ),
-                        onSubmitted: (_) => _register(),
+                        onSubmitted: (_) => _requestOtp(),
                       ),
                       if (_error != null) ...[
                         const SizedBox(height: 14),
@@ -169,34 +123,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
                               child: CircularProgressIndicator(
                                   color: CareSoulTheme.primary))
                           : FilledButton(
-                              onPressed: _register,
-                              child: const Text('Create Account'),
+                              onPressed: _requestOtp,
+                              child: const Text('Send Reset OTP'),
                             ),
                     ],
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-                TextButton(
-                  onPressed: () => Navigator.pushReplacement(
-                    context,
-                    MaterialPageRoute(builder: (_) => const LoginScreen()),
-                  ),
-                  child: RichText(
-                    text: const TextSpan(
-                      text: 'Already have an account? ',
-                      style: TextStyle(
-                          color: CareSoulTheme.textSecondary, fontSize: 15),
-                      children: [
-                        TextSpan(
-                          text: 'Login',
-                          style: TextStyle(
-                            color: CareSoulTheme.primary,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
                 ),
               ],

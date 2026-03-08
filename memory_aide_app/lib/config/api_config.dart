@@ -5,13 +5,18 @@ import 'package:flutter/foundation.dart';
 class ApiConfig {
   static String get baseUrl {
     if (kIsWeb) return 'http://localhost:8000';
-    // Android emulator maps 10.0.2.2 to host localhost
-    return 'http://10.0.2.2:8000';
+    // For physical Android device via USB cable (adb reverse tcp:8000 tcp:8000)
+    // or Emulator using adb reverse.
+    return 'http://localhost:8000';
   }
 
   // Auth
   static String get loginUrl => '$baseUrl/login';
-  static String get registerUrl => '$baseUrl/register';
+  static String get registerRequestOtpUrl => '$baseUrl/request-register-otp';
+  static String get registerVerifyUrl => '$baseUrl/verify-register';
+  static String get forgotPasswordOtpUrl =>
+      '$baseUrl/forgot-password/request-otp';
+  static String get resetPasswordUrl => '$baseUrl/forgot-password/reset';
 
   // Patient
   static String patientUrl(String userId) => '$baseUrl/patient/$userId';

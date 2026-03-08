@@ -212,20 +212,36 @@ class ApiService {
     return [];
   }
 
-  static Future<bool> uploadVoice(
-      List<int> bytes, String filename, String name) async {
+  static Future<bool> uploadVoice(List<int> bytes, String filename, String name,
+      String patientId, String time) async {
     try {
       final request =
           http.MultipartRequest('POST', Uri.parse(ApiConfig.voiceUploadUrl));
       final token = await AuthService.getToken();
       request.headers['Authorization'] = 'Bearer ${token ?? ''}';
       request.fields['name'] = name;
+      request.fields['patient_id'] = patientId;
+      request.fields['scheduled_time'] = time;
       request.files
           .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       final response = await request.send();
       return response.statusCode == 200;
     } catch (e) {
       debugPrint('uploadVoice error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> updateVoice(String id, Map<String, dynamic> data) async {
+    try {
+      final response = await http.put(
+        Uri.parse(ApiConfig.voiceUrl(id)),
+        headers: await AuthService.authHeaders(),
+        body: jsonEncode(data),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('updateVoice error: $e');
       return false;
     }
   }
