@@ -225,9 +225,52 @@ class ApiService {
       request.files
           .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       final response = await request.send();
+      debugPrint('uploadVoice status: ${response.statusCode}');
+      if (response.statusCode != 200) {
+        final body = await response.stream.bytesToString();
+        debugPrint('uploadVoice response: $body');
+      }
       return response.statusCode == 200;
     } catch (e) {
       debugPrint('uploadVoice error: $e');
+      return false;
+    }
+  }
+
+  /// Upload voice from a blob URL (web) by fetching it first
+  static Future<bool> uploadVoiceFromBlobUrl(
+      String blobUrl, String name, String patientId, String time) async {
+    try {
+      // Fetch the blob data via HTTP
+      final blobResponse = await http.get(Uri.parse(blobUrl));
+      if (blobResponse.statusCode == 200) {
+        return uploadVoice(blobResponse.bodyBytes.toList(), 'recording.webm',
+            name, patientId, time);
+      }
+      debugPrint('Failed to fetch blob: ${blobResponse.statusCode}');
+      return false;
+    } catch (e) {
+      debugPrint('uploadVoiceFromBlobUrl error: $e');
+      return false;
+    }
+  }
+
+  /// Upload voice from a file path (mobile)
+  static Future<bool> uploadVoiceFromFilePath(
+      String filePath, String name, String patientId, String time) async {
+    try {
+      final request =
+          http.MultipartRequest('POST', Uri.parse(ApiConfig.voiceUploadUrl));
+      final token = await AuthService.getToken();
+      request.headers['Authorization'] = 'Bearer ${token ?? ''}';
+      request.fields['name'] = name;
+      request.fields['patient_id'] = patientId;
+      request.fields['scheduled_time'] = time;
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      final response = await request.send();
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('uploadVoiceFromFilePath error: $e');
       return false;
     }
   }

@@ -1,12 +1,14 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:record/record.dart';
 import '../../services/api_service.dart';
 import '../../services/auth_service.dart';
 import '../../config/theme.dart';
 import '../../config/api_config.dart';
 
 /// Voice recording screen – manage caregiver voice profiles.
-/// Web platform uses simulated recording; real device uses file picker.
+/// Uses the `record` package for real audio recording on web & mobile.
 class VoiceRecordingScreen extends StatefulWidget {
   const VoiceRecordingScreen({super.key});
 
@@ -26,6 +28,11 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
   final AudioPlayer _audioPlayer = AudioPlayer();
   String? _playingVoiceId;
 
+  // Recording
+  final AudioRecorder _recorder = AudioRecorder();
+
+  String? _recordedBlobUrl; // For web playback of local recording
+
   @override
   void initState() {
     super.initState();
@@ -40,6 +47,7 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
   void dispose() {
     _pulseController.dispose();
     _audioPlayer.dispose();
+    _recorder.dispose();
     super.dispose();
   }
 
@@ -53,46 +61,130 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
     if (mounted) setState(() => _isLoading = false);
   }
 
-  void _startRecording() {
-    setState(() => _isRecording = true);
-    _pulseController.repeat(reverse: true);
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            Icon(Icons.mic, color: Colors.white, size: 20),
-            SizedBox(width: 8),
-            Text('Recording... Tap to stop'),
-          ],
+  Future<void> _startRecording() async {
+    try {
+      final hasPermission = await _recorder.hasPermission();
+      if (!hasPermission) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Microphone permission denied'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+
+      // Record as WAV (widely supported). On web, the browser picks the codec.
+      await _recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.wav,
+          sampleRate: 44100,
+          numChannels: 1,
         ),
-        backgroundColor: Colors.red,
-        duration: Duration(seconds: 10),
-      ),
-    );
+        path: '', // empty path for in-memory / stream recording on web
+      );
+
+      setState(() => _isRecording = true);
+      _pulseController.repeat(reverse: true);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.mic, color: Colors.white, size: 20),
+                SizedBox(width: 8),
+                Text('Recording... Tap to stop'),
+              ],
+            ),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 30),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Start recording error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not start recording: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
-  void _stopRecording() {
-    setState(() {
-      _isRecording = false;
-      _hasRecording = true;
-    });
-    _pulseController.stop();
-    _pulseController.reset();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            Icon(Icons.check_circle, color: Colors.white, size: 20),
-            SizedBox(width: 8),
-            Text('Recording saved!'),
-          ],
-        ),
-        backgroundColor: CareSoulTheme.success,
-      ),
-    );
+  Future<void> _stopRecording() async {
+    try {
+      final path = await _recorder.stop();
+      debugPrint('Recording stopped. Path: $path');
+
+      if (path != null && path.isNotEmpty) {
+        // On web, `path` is a blob URL (blob:http://...).
+        // On mobile, `path` is a file system path.
+        // In both cases, store it for playback and upload.
+        _recordedBlobUrl = path;
+
+        setState(() {
+          _isRecording = false;
+          _hasRecording = true;
+        });
+      } else {
+        setState(() => _isRecording = false);
+      }
+
+      _pulseController.stop();
+      _pulseController.reset();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        if (_hasRecording) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Row(
+                children: [
+                  Icon(Icons.check_circle, color: Colors.white, size: 20),
+                  SizedBox(width: 8),
+                  Text('Recording saved! You can preview or upload it.'),
+                ],
+              ),
+              backgroundColor: CareSoulTheme.success,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('Stop recording error: $e');
+      setState(() => _isRecording = false);
+      _pulseController.stop();
+      _pulseController.reset();
+    }
+  }
+
+  Future<void> _playRecordedPreview() async {
+    if (_recordedBlobUrl == null) return;
+    try {
+      await _audioPlayer.stop();
+      if (kIsWeb) {
+        // On web, play the blob URL directly
+        await _audioPlayer.play(UrlSource(_recordedBlobUrl!));
+      } else {
+        await _audioPlayer.play(DeviceFileSource(_recordedBlobUrl!));
+      }
+    } catch (e) {
+      debugPrint('Preview play error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not play preview: $e'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> _uploadVoice() async {
@@ -146,14 +238,22 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
 
     setState(() => _isLoading = true);
 
-    // Simulated upload with dummy audio data
-    final dummyBytes = List<int>.filled(1024, 0);
-    final success = await ApiService.uploadVoice(
-        dummyBytes, 'recording.wav', name, _patientId!, timeStr);
+    bool success = false;
+
+    if (kIsWeb && _recordedBlobUrl != null) {
+      // On web, upload blob via special method
+      success = await ApiService.uploadVoiceFromBlobUrl(
+          _recordedBlobUrl!, name, _patientId!, timeStr);
+    } else if (_recordedBlobUrl != null) {
+      // Mobile - read file and upload
+      success = await ApiService.uploadVoiceFromFilePath(
+          _recordedBlobUrl!, name, _patientId!, timeStr);
+    }
 
     if (mounted) {
       setState(() {
         _hasRecording = false;
+        _recordedBlobUrl = null;
         _isLoading = false;
       });
 
@@ -316,7 +416,19 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                         ),
 
                         if (_hasRecording) ...[
-                          const SizedBox(height: 20),
+                          const SizedBox(height: 16),
+                          // Preview button
+                          OutlinedButton.icon(
+                            onPressed: _playRecordedPreview,
+                            icon: const Icon(Icons.play_arrow_rounded),
+                            label: const Text('Preview Recording'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF7C3AED),
+                              side: const BorderSide(color: Color(0xFF7C3AED)),
+                              minimumSize: const Size(220, 46),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
                           FilledButton.icon(
                             onPressed: _uploadVoice,
                             icon: const Icon(Icons.cloud_upload_rounded),
@@ -402,6 +514,11 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                             title: Text(v['name'] ?? 'Voice',
                                 style: const TextStyle(
                                     fontWeight: FontWeight.w600, fontSize: 16)),
+                            subtitle: v['scheduled_time'] != null
+                                ? Text('⏰ ${v['scheduled_time']}',
+                                    style: TextStyle(
+                                        fontSize: 13, color: Colors.grey[600]))
+                                : null,
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -415,20 +532,41 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                                         : CareSoulTheme.primary,
                                   ),
                                   onPressed: () async {
+                                    final messenger =
+                                        ScaffoldMessenger.of(context);
                                     if (_playingVoiceId == v['id']) {
                                       await _audioPlayer.stop();
                                       setState(() => _playingVoiceId = null);
                                     } else {
-                                      await _audioPlayer.stop();
-                                      setState(() => _playingVoiceId = v['id']);
-                                      await _audioPlayer.play(UrlSource(
-                                          ApiConfig.fileUrl(v['file_url'])));
-                                      _audioPlayer.onPlayerComplete.listen((_) {
+                                      try {
+                                        await _audioPlayer.stop();
+                                        setState(
+                                            () => _playingVoiceId = v['id']);
+                                        final url =
+                                            ApiConfig.fileUrl(v['file_url']);
+                                        debugPrint('Playing voice from: $url');
+                                        await _audioPlayer.play(UrlSource(url));
+                                        _audioPlayer.onPlayerComplete
+                                            .listen((_) {
+                                          if (mounted) {
+                                            setState(
+                                                () => _playingVoiceId = null);
+                                          }
+                                        });
+                                      } catch (e) {
+                                        debugPrint('Play error: $e');
                                         if (mounted) {
                                           setState(
                                               () => _playingVoiceId = null);
+                                          messenger.showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                  'Could not play: ${e.toString().substring(0, 50)}'),
+                                              backgroundColor: Colors.orange,
+                                            ),
+                                          );
                                         }
-                                      });
+                                      }
                                     }
                                   },
                                 ),

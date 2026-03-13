@@ -104,6 +104,186 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
     }
   }
 
+  /// Opens a dialog to edit the medicine at [index].
+  Future<void> _editMedicine(int index) async {
+    final med = Map<String, dynamic>.from(_parsedMedicines[index]);
+
+    final nameCtrl =
+        TextEditingController(text: med['medicine_name'] ?? '');
+    final dosageCtrl =
+        TextEditingController(text: med['dosage'] ?? '');
+    final frequencyCtrl =
+        TextEditingController(text: med['frequency'] ?? '');
+    final timeCtrl =
+        TextEditingController(text: med['time_of_day'] ?? '08:00');
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2563EB).withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(Icons.edit_rounded,
+                  color: Color(0xFF2563EB), size: 20),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text('Edit Medicine',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
+            ),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 4),
+              TextField(
+                controller: nameCtrl,
+                style: const TextStyle(fontSize: 16),
+                decoration: InputDecoration(
+                  labelText: 'Medicine Name',
+                  prefixIcon: const Icon(Icons.medication_rounded, size: 20),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: dosageCtrl,
+                style: const TextStyle(fontSize: 16),
+                decoration: InputDecoration(
+                  labelText: 'Dosage',
+                  hintText: 'e.g. 500mg, 1 tablet',
+                  prefixIcon:
+                      const Icon(Icons.science_rounded, size: 20),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: frequencyCtrl,
+                style: const TextStyle(fontSize: 16),
+                decoration: InputDecoration(
+                  labelText: 'Frequency',
+                  hintText: 'e.g. Daily, Every 8 hours',
+                  prefixIcon:
+                      const Icon(Icons.repeat_rounded, size: 20),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: timeCtrl,
+                style: const TextStyle(fontSize: 16),
+                decoration: InputDecoration(
+                  labelText: 'Time of Day',
+                  hintText: 'e.g. 08:00, 14:00',
+                  prefixIcon:
+                      const Icon(Icons.schedule_rounded, size: 20),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.access_time_rounded,
+                        color: Color(0xFF2563EB)),
+                    onPressed: () async {
+                      // Parse existing time
+                      final parts = timeCtrl.text.split(':');
+                      final initHour = int.tryParse(parts.isNotEmpty ? parts[0] : '8') ?? 8;
+                      final initMin = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+                      final picked = await showTimePicker(
+                        context: ctx,
+                        initialTime: TimeOfDay(hour: initHour, minute: initMin),
+                      );
+                      if (picked != null) {
+                        timeCtrl.text =
+                            '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
+                      }
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actionsPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton.icon(
+            onPressed: () {
+              Navigator.pop(ctx, {
+                'medicine_name': nameCtrl.text.trim(),
+                'dosage': dosageCtrl.text.trim(),
+                'frequency': frequencyCtrl.text.trim(),
+                'time_of_day': timeCtrl.text.trim(),
+              });
+            },
+            icon: const Icon(Icons.check_rounded, size: 18),
+            label: const Text('Save'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFF2563EB),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (result != null && mounted) {
+      setState(() {
+        _parsedMedicines[index] = result;
+      });
+    }
+  }
+
+  /// Removes the medicine at [index] with a confirmation.
+  void _deleteMedicine(int index) {
+    final name = _parsedMedicines[index]['medicine_name'] ?? 'this medicine';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Remove Medicine',
+            style: TextStyle(fontWeight: FontWeight.w700)),
+        content: Text('Remove "$name" from the list?',
+            style: const TextStyle(fontSize: 15)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() => _parsedMedicines.removeAt(index));
+            },
+            style: FilledButton.styleFrom(backgroundColor: CareSoulTheme.error),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _saveAsReminders() async {
     if (_parsedMedicines.isEmpty || _patientId == null) return;
 
@@ -255,18 +435,26 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
                   const SizedBox(height: 24),
 
                   if (_parsedMedicines.isNotEmpty) ...[
-                    // ── Results ──
+                    // ── Results Header ──
                     Row(
                       children: [
                         const Icon(Icons.medication_rounded,
                             color: CareSoulTheme.primary, size: 22),
                         const SizedBox(width: 8),
-                        Text(
-                          'Found ${_parsedMedicines.length} Medicines',
-                          style: const TextStyle(
-                              fontSize: 20, fontWeight: FontWeight.w700),
+                        Expanded(
+                          child: Text(
+                            'Found ${_parsedMedicines.length} Medicines',
+                            style: const TextStyle(
+                                fontSize: 20, fontWeight: FontWeight.w700),
+                          ),
                         ),
                       ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Tap the edit icon to correct any details',
+                      style: TextStyle(
+                          fontSize: 13, color: Colors.grey[500]),
                     ),
                     const SizedBox(height: 12),
 
@@ -290,28 +478,128 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
                               ),
                             ],
                           ),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.all(14),
-                            leading: Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: CareSoulTheme.primary
-                                    .withValues(alpha: 0.1),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: const Icon(Icons.medication_rounded,
-                                  color: CareSoulTheme.primary),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 12),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // Medicine icon
+                                Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: CareSoulTheme.primary
+                                        .withValues(alpha: 0.1),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(Icons.medication_rounded,
+                                      color: CareSoulTheme.primary),
+                                ),
+                                const SizedBox(width: 12),
+                                // Medicine details
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        med['medicine_name'] ?? '',
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.w700,
+                                            fontSize: 17),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          Icon(Icons.science_rounded,
+                                              size: 14,
+                                              color: Colors.grey[500]),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            med['dosage'] ?? '',
+                                            style: TextStyle(
+                                                fontSize: 14,
+                                                color: Colors.grey[700]),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Row(
+                                        children: [
+                                          Icon(Icons.repeat_rounded,
+                                              size: 14,
+                                              color: Colors.grey[500]),
+                                          const SizedBox(width: 4),
+                                          Flexible(
+                                            child: Text(
+                                              med['frequency'] ?? '',
+                                              style: TextStyle(
+                                                  fontSize: 14,
+                                                  color: Colors.grey[700]),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Row(
+                                        children: [
+                                          Icon(Icons.schedule_rounded,
+                                              size: 14,
+                                              color: Colors.grey[500]),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            med['time_of_day'] ?? '',
+                                            style: TextStyle(
+                                                fontSize: 14,
+                                                color: Colors.grey[700]),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                // Action buttons
+                                Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    // Edit button
+                                    Material(
+                                      color: const Color(0xFF2563EB)
+                                          .withValues(alpha: 0.08),
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: InkWell(
+                                        borderRadius:
+                                            BorderRadius.circular(10),
+                                        onTap: () => _editMedicine(index),
+                                        child: const Padding(
+                                          padding: EdgeInsets.all(8),
+                                          child: Icon(Icons.edit_rounded,
+                                              color: Color(0xFF2563EB),
+                                              size: 20),
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    // Delete button
+                                    Material(
+                                      color: Colors.red.withValues(alpha: 0.08),
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: InkWell(
+                                        borderRadius:
+                                            BorderRadius.circular(10),
+                                        onTap: () => _deleteMedicine(index),
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(8),
+                                          child: Icon(Icons.delete_outline_rounded,
+                                              color: Colors.red[400],
+                                              size: 20),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
                             ),
-                            title: Text(
-                              med['medicine_name'] ?? '',
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w700, fontSize: 17),
-                            ),
-                            subtitle: Text(
-                              '${med['dosage']} • ${med['frequency']}\nTime: ${med['time_of_day']}',
-                              style: const TextStyle(fontSize: 14, height: 1.4),
-                            ),
-                            isThreeLine: true,
                           ),
                         );
                       },

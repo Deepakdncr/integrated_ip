@@ -313,16 +313,8 @@ def create_tables():
         )
     """)
 
-    # Try altering existing users table for new fields
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN phone_number TEXT UNIQUE;")
-    except Exception:
-        conn.rollback()
-    
-    try:
-        cur.execute("ALTER TABLE users ADD COLUMN is_verified BOOLEAN DEFAULT FALSE;")
-    except Exception:
-        conn.rollback()
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE")
 
     conn.commit()
     cur.close()
@@ -340,7 +332,7 @@ def home():
 
 
 @app.post("/request-register-otp")
-def request_register_otp(req: RegisterRequest, background_tasks: BackgroundTasks):
+async def request_register_otp(req: RegisterRequest):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -360,7 +352,11 @@ def request_register_otp(req: RegisterRequest, background_tasks: BackgroundTasks
             body=f"Welcome to CareSoul! Your account verification code is: {otp_code}",
             subtype=MessageType.plain
         )
-        background_tasks.add_task(fm.send_message, message)
+        try:
+            await fm.send_message(message)
+        except Exception as e:
+            print("Email sending failed:", str(e))
+            raise HTTPException(status_code=500, detail="Could not send email OTP.")
 
         cur.execute(
             "INSERT INTO otps (id, identifier, otp_code, expires_at) VALUES (%s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '10 minutes')",
@@ -423,7 +419,7 @@ def verify_register(req: RegisterVerifyRequest):
 
 
 @app.post("/forgot-password/request-otp")
-def forgot_password_otp(req: ForgotPasswordRequest, background_tasks: BackgroundTasks):
+async def forgot_password_otp(req: ForgotPasswordRequest):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -444,7 +440,11 @@ def forgot_password_otp(req: ForgotPasswordRequest, background_tasks: Background
             body=f"You requested a password reset. Your OTP is: {otp_code}",
             subtype=MessageType.plain
         )
-        background_tasks.add_task(fm.send_message, message)
+        try:
+            await fm.send_message(message)
+        except Exception as e:
+            print("Email sending failed:", str(e))
+            raise HTTPException(status_code=500, detail="Could not send email OTP.")
 
         cur.execute(
             "INSERT INTO otps (id, identifier, otp_code, expires_at) VALUES (%s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '10 minutes')",
@@ -625,6 +625,10 @@ async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(ve
         }
         '''
         
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        print(f"[OCR] Using API key: {api_key[:12]}...{api_key[-4:]}" if api_key else "[OCR] WARNING: No API key found!")
+        print(f"[OCR] Image size: {len(base64_image)} chars base64")
+        
         completion = client.chat.completions.create(
             extra_headers={
                 "HTTP-Referer": "http://localhost:8000",
@@ -639,7 +643,7 @@ async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(ve
                         {
                             "type": "image_url",
                             "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
+                                "url": f"data:image/{ext};base64,{base64_image}"
                             }
                         }
                     ]
@@ -648,6 +652,7 @@ async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(ve
         )
         
         response_text = completion.choices[0].message.content.strip()
+        print(f"[OCR] Raw AI response: {response_text[:500]}")
         
         # Strip potential markdown formatting
         if response_text.startswith("```json"):
@@ -656,10 +661,17 @@ async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(ve
             response_text = response_text[3:-3].strip()
             
         data = json.loads(response_text)
-        return {"medicines": data.get("medicines", []), "image_url": f"/uploads/prescriptions/{filename}"}
+        medicines = data.get("medicines", [])
+        if not medicines:
+            raise HTTPException(status_code=400, detail="No medicines found in the image. Please upload a clearer prescription.")
+        return {"medicines": medicines, "image_url": f"/uploads/prescriptions/{filename}"}
         
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"OCR Parsing Error: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"[OCR] Full error: {repr(e)}")
         raise HTTPException(status_code=400, detail="Could not extract medicines. Please upload a clear image.")
 
 # ============================================================
