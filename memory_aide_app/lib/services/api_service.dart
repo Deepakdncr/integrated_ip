@@ -68,14 +68,29 @@ class ApiService {
       request.files
           .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
+      debugPrint('ocrPrescription status: ${response.statusCode}');
+      debugPrint('ocrPrescription body: $responseBody');
+      
       if (response.statusCode == 200) {
-        final body = jsonDecode(await response.stream.bytesToString());
+        final body = jsonDecode(responseBody);
         return List<Map<String, dynamic>>.from(body['medicines'] ?? []);
+      } else {
+        // Parse error detail from server
+        try {
+          final errorBody = jsonDecode(responseBody);
+          final detail = errorBody['detail'] ?? 'Unknown error';
+          debugPrint('ocrPrescription server error: $detail');
+          throw Exception(detail);
+        } catch (e) {
+          if (e is Exception) rethrow;
+          throw Exception('Server returned error ${response.statusCode}');
+        }
       }
     } catch (e) {
       debugPrint('ocrPrescription error: $e');
+      rethrow;
     }
-    return [];
   }
 
   // ============ REMINDERS ============

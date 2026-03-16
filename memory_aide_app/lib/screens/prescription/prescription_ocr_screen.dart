@@ -74,29 +74,49 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
         _parsedMedicines = [];
       });
 
-      final bytes = await image.readAsBytes();
-      final data = await ApiService.ocrPrescription(bytes, image.name);
+      try {
+        final bytes = await image.readAsBytes();
+        final data = await ApiService.ocrPrescription(bytes, image.name);
 
-      if (mounted) {
-        setState(() {
-          _parsedMedicines = data;
-          _isLoading = false;
-        });
+        if (mounted) {
+          setState(() {
+            _parsedMedicines = data;
+            _isLoading = false;
+          });
 
-        if (data.isNotEmpty) {
+          if (data.isNotEmpty) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Found ${data.length} medicines!'),
+                backgroundColor: CareSoulTheme.success,
+              ),
+            );
+          } else {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                    'No medicines were found. Please upload a prescription image.'),
+                backgroundColor: CareSoulTheme.error,
+                duration: Duration(seconds: 4),
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _isLoading = false);
+          
+          // Extract the actual error message
+          String errorMessage = e.toString();
+          if (errorMessage.startsWith('Exception: ')) {
+            errorMessage = errorMessage.substring(11);
+          }
+          
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Found ${data.length} medicines!'),
-              backgroundColor: CareSoulTheme.success,
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'Could not extract medicines. Please upload a clear image again.'),
+              content: Text(errorMessage),
               backgroundColor: CareSoulTheme.error,
-              duration: Duration(seconds: 4),
+              duration: const Duration(seconds: 5),
             ),
           );
         }

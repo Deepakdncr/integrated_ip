@@ -589,7 +589,7 @@ async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(ve
     """
     Accepts prescription image, performs OCR via OpenRouter, returns structured medicine data.
     """
-    ext = file.filename.split(".")[-1] if file.filename else "jpg"
+    ext = file.filename.split(".")[-1].lower() if file.filename else "jpg"
     filename = f"{uuid.uuid4()}.{ext}"
     filepath = os.path.join(UPLOAD_DIR, "prescriptions", filename)
     
@@ -600,79 +600,145 @@ async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(ve
     # Convert to base64 for API
     with open(filepath, "rb") as image_file:
         base64_image = base64.b64encode(image_file.read()).decode("utf-8")
-        
-    try:
-        client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.getenv("OPENROUTER_API_KEY"),
-        )
-        
-        prompt = '''
-        You are an expert medical assistant reading a prescription image.
-        Extract the medicines listed in the image. 
-        For each medicine, determine the medicine_name, dosage, frequency, and an estimated time_of_day (e.g., "08:00").
-        
-        Return ONLY valid JSON with this exact structure, with no markdown formatting or backticks:
-        {
-          "medicines": [
-            {
-              "medicine_name": "Name",
-              "dosage": "1 pill",
-              "frequency": "Daily",
-              "time_of_day": "08:00"
-            }
-          ]
-        }
-        '''
-        
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        print(f"[OCR] Using API key: {api_key[:12]}...{api_key[-4:]}" if api_key else "[OCR] WARNING: No API key found!")
-        print(f"[OCR] Image size: {len(base64_image)} chars base64")
-        
-        completion = client.chat.completions.create(
-            extra_headers={
-                "HTTP-Referer": "http://localhost:8000",
-                "X-OpenRouter-Title": "CareSoul",
-            },
-            model="google/gemma-3-27b-it:free",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/{ext};base64,{base64_image}"
+    
+    # Determine proper MIME type
+    mime_map = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp", "gif": "gif", "bmp": "bmp"}
+    mime_ext = mime_map.get(ext, "jpeg")
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Server configuration error: No API key found.")
+
+    print(f"[OCR] Using API key: {api_key[:12]}...{api_key[-4:]}")
+    print(f"[OCR] Image size: {len(base64_image)} chars base64, MIME: image/{mime_ext}")
+
+    prompt = '''You are an expert medical assistant reading a prescription image.
+Extract ALL the medicines listed in the image.
+For each medicine, determine the medicine_name, dosage, frequency, and an estimated time_of_day (e.g., "08:00").
+
+If the image contains handwritten text, try your best to read it.
+If the image is a valid prescription but text is hard to read, still attempt to extract what you can.
+
+Return ONLY valid JSON with this exact structure, with no markdown formatting or backticks:
+{
+  "medicines": [
+    {
+      "medicine_name": "Name",
+      "dosage": "1 pill",
+      "frequency": "Daily",
+      "time_of_day": "08:00"
+    }
+  ]
+}
+
+If you truly cannot find ANY medicines in the image (e.g., the image is not a prescription at all), return:
+{"medicines": []}
+'''
+
+    # Models to try in order (primary, then fallback)
+    models = [
+        "google/gemini-2.0-flash-001",
+        "google/gemini-2.5-flash-preview",
+        "google/gemma-3-27b-it:free",
+    ]
+
+    last_error = None
+    for model_name in models:
+        try:
+            print(f"[OCR] Trying model: {model_name}")
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=api_key,
+            )
+
+            completion = client.chat.completions.create(
+                extra_headers={
+                    "HTTP-Referer": "http://localhost:8000",
+                    "X-OpenRouter-Title": "CareSoul",
+                },
+                model=model_name,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/{mime_ext};base64,{base64_image}"
+                                }
                             }
-                        }
-                    ]
-                }
-            ]
-        )
-        
-        response_text = completion.choices[0].message.content.strip()
-        print(f"[OCR] Raw AI response: {response_text[:500]}")
-        
-        # Strip potential markdown formatting
-        if response_text.startswith("```json"):
-            response_text = response_text[7:-3].strip()
-        elif response_text.startswith("```"):
-            response_text = response_text[3:-3].strip()
+                        ]
+                    }
+                ]
+            )
             
-        data = json.loads(response_text)
-        medicines = data.get("medicines", [])
-        if not medicines:
-            raise HTTPException(status_code=400, detail="No medicines found in the image. Please upload a clearer prescription.")
-        return {"medicines": medicines, "image_url": f"/uploads/prescriptions/{filename}"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"[OCR] Full error: {repr(e)}")
-        raise HTTPException(status_code=400, detail="Could not extract medicines. Please upload a clear image.")
+            if not completion.choices or not completion.choices[0].message.content:
+                print(f"[OCR] Model {model_name} returned empty response, trying next...")
+                last_error = "Model returned empty response"
+                continue
+
+            response_text = completion.choices[0].message.content.strip()
+            print(f"[OCR] Raw AI response from {model_name}: {response_text[:500]}")
+            
+            # Strip potential markdown formatting
+            if response_text.startswith("```json"):
+                response_text = response_text[7:].strip()
+            if response_text.endswith("```"):
+                response_text = response_text[:-3].strip()
+            elif response_text.startswith("```"):
+                response_text = response_text[3:].strip()
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3].strip()
+
+            # Try to find JSON in the response if it's wrapped in other text
+            json_start = response_text.find("{")
+            json_end = response_text.rfind("}") + 1
+            if json_start != -1 and json_end > json_start:
+                response_text = response_text[json_start:json_end]
+
+            data = json.loads(response_text)
+            medicines = data.get("medicines", [])
+            if not medicines:
+                print(f"[OCR] Model {model_name} found no medicines")
+                raise HTTPException(
+                    status_code=400, 
+                    detail="No medicines found in the image. Please make sure the image is a prescription and try again."
+                )
+            
+            print(f"[OCR] Successfully extracted {len(medicines)} medicines using {model_name}")
+            return {"medicines": medicines, "image_url": f"/uploads/prescriptions/{filename}"}
+            
+        except HTTPException:
+            raise
+        except json.JSONDecodeError as e:
+            print(f"[OCR] JSON parse error with {model_name}: {e}")
+            last_error = f"AI response was not valid JSON"
+            continue
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            error_str = str(e).lower()
+            print(f"[OCR] Error with {model_name}: {repr(e)}")
+            
+            # If rate limited, try next model
+            if "429" in str(e) or "rate" in error_str or "limit" in error_str:
+                print(f"[OCR] Rate limited on {model_name}, trying next model...")
+                last_error = "API rate limit reached"
+                continue
+            # If model doesn't support images, try next
+            elif "not support" in error_str or "unsupported" in error_str or "400" in str(e):
+                print(f"[OCR] Model {model_name} may not support images, trying next...")
+                last_error = f"Model {model_name} error"
+                continue
+            else:
+                last_error = str(e)
+                continue
+
+    # All models failed
+    error_msg = f"Could not process the prescription after trying multiple AI models. Last error: {last_error}. Please try again in a moment."
+    print(f"[OCR] All models failed. Last error: {last_error}")
+    raise HTTPException(status_code=500, detail=error_msg)
 
 # ============================================================
 # REMINDER ROUTES
