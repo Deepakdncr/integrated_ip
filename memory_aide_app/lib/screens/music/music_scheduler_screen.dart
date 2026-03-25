@@ -28,11 +28,12 @@ class _MusicSchedulerScreenState extends State<MusicSchedulerScreen> {
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
-    _userId = await AuthService.getUserId();
-    _patientId = await AuthService.getPatientId();
-    if (_userId != null) {
-      _music = await ApiService.getMusic(_userId!);
-    }
+    // _userId = await AuthService.getUserId();
+    // _patientId = await AuthService.getPatientId();
+    _userId = 'test_user'; // Hardcoded for ESP32 integration
+    _patientId = 'test_user';
+    
+    _music = await ApiService.getMusic(_userId!);
     if (mounted) setState(() => _isLoading = false);
   }
 

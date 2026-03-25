@@ -25,7 +25,8 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
   }
 
   Future<void> _loadPatient() async {
-    _patientId = await AuthService.getPatientId();
+    // _patientId = await AuthService.getPatientId();
+    _patientId = 'test_user'; // Hardcoded for ESP32 integration
   }
 
   Future<void> _scanPrescription() async {
@@ -313,6 +314,7 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
     for (var med in _parsedMedicines) {
       final timeStr =
           (med['time_of_day'] as String?)?.split(',').first.trim() ?? '08:00';
+      debugPrint('Saving reminder: ${med['medicine_name']} for patient: $_patientId');
       final success = await ApiService.createReminder({
         'patient_id': _patientId,
         'medicine_name': med['medicine_name'] ?? 'Unknown',
@@ -323,6 +325,7 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
         'repeat_count': 2,
         'repeat_interval_minutes': 5,
       });
+      debugPrint('Save success: $success');
       if (!success) allSuccess = false;
     }
 

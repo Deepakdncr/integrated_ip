@@ -24,7 +24,7 @@ dependencies:
   image_picker: ^1.0.7
 
   # File picker (music upload)
-  file_picker: ^6.1.1
+  file_picker: ^8.0.0
 
   # Audio playback
   audioplayers: ^6.0.0

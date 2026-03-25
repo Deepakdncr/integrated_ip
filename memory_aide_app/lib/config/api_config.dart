@@ -1,13 +1,14 @@
 // API configuration for CareSoul app.
 // Change [baseUrl] when deploying to production.
+import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 
 class ApiConfig {
   static String get baseUrl {
-    if (kIsWeb) return 'http://localhost:8000';
-    // For physical Android device via USB cable (adb reverse tcp:8000 tcp:8000)
-    // or Emulator using adb reverse.
-    return 'http://localhost:8000';
+    if (kIsWeb) return 'http://10.152.144.17:8000';
+    // Use the laptop's Wi-Fi IP so physical Android/iOS devices can reach the backend.
+    if (Platform.isAndroid || Platform.isIOS) return 'http://10.152.144.17:8000';
+    return 'http://10.152.144.17:8000';
   }
 
   // Auth

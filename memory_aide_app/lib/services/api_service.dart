@@ -99,7 +99,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse(ApiConfig.remindersUrl(userId)),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
       );
       if (response.statusCode == 200) {
         return List<Map<String, dynamic>>.from(jsonDecode(response.body));
@@ -114,7 +114,7 @@ class ApiService {
     try {
       final response = await http.post(
         Uri.parse(ApiConfig.reminderCreateUrl),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(data),
       );
       return response.statusCode == 200;

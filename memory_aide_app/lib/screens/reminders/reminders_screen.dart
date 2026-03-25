@@ -28,10 +28,9 @@ class _RemindersScreenState extends State<RemindersScreen> {
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     _userId = await AuthService.getUserId();
-    _patientId = await AuthService.getPatientId();
-    if (_userId == null) return;
+    _patientId = 'test_user'; // Always use test_user for ESP32 integration
 
-    final data = await ApiService.getReminders(_userId!);
+    final data = await ApiService.getReminders('test_user');
     if (mounted) {
       setState(() {
         _reminders = data;
@@ -239,7 +238,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
             ),
             FilledButton.icon(
               onPressed: () async {
-                if (nameCtrl.text.trim().isEmpty || _patientId == null) {
+                if (nameCtrl.text.trim().isEmpty) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Please enter medicine name')),
                   );
@@ -248,7 +247,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                 final timeStr =
                     '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
                 final success = await ApiService.createReminder({
-                  'patient_id': _patientId,
+                  'patient_id': 'test_user', // Fixed: ESP32 looks up by this user_id
                   'medicine_name': nameCtrl.text.trim(),
                   'dosage': dosageCtrl.text.trim(),
                   'frequency': 'Daily',

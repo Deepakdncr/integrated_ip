@@ -4,6 +4,7 @@ FastAPI Backend with PostgreSQL
 """
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Form
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -23,6 +24,7 @@ from typing import Optional
 from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from fastapi import BackgroundTasks
 from dotenv import load_dotenv
+from gtts import gTTS
 
 load_dotenv()
 
@@ -75,7 +77,7 @@ def get_connection():
     return psycopg2.connect(
         dbname="memory_aide",
         user="postgres",
-        password="1234",
+        password="Deepak",
         host="localhost",
         port="5432",
     )
@@ -235,7 +237,7 @@ def create_tables():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS reminders (
             id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
             patient_id TEXT NOT NULL,
             medicine_name TEXT NOT NULL,
             dosage TEXT NOT NULL,
@@ -295,7 +297,7 @@ def create_tables():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS device_status (
             id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL,
             device_id TEXT NOT NULL DEFAULT 'ESP32-001',
             wifi_status TEXT DEFAULT 'unknown',
             is_online BOOLEAN DEFAULT FALSE,
@@ -316,10 +318,38 @@ def create_tables():
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE")
 
+    # Drop legacy FK constraints on reminders and device_status so user_id
+    # can hold arbitrary values like 'test_user' without referencing users table.
+    for stmt in [
+        "ALTER TABLE reminders DROP CONSTRAINT IF EXISTS reminders_user_id_fkey",
+        "ALTER TABLE device_status DROP CONSTRAINT IF EXISTS device_status_user_id_fkey",
+    ]:
+        try:
+            cur.execute(stmt)
+        except Exception:
+            conn.rollback()  # ignore if constraint name differs on this DB instance
+            # Try by finding the actual constraint name
+            pass
+
+
+    # Seed test_user in users table (needed if other tables still reference it)
+    cur.execute("""
+        INSERT INTO users (id, email, password_hash, is_verified)
+        VALUES ('test_user', 'test@caresoul.local', 'no_password', TRUE)
+        ON CONFLICT (id) DO NOTHING
+    """)
+
+    # Seed ESP32-001 → test_user mapping in device_status
+    cur.execute("""
+        INSERT INTO device_status (id, user_id, device_id)
+        VALUES ('esp32-device-001', 'test_user', 'ESP32-001')
+        ON CONFLICT (id) DO NOTHING
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ CareSoul database tables ready")
+    print("[OK] CareSoul database tables ready")
 
 
 # ============================================================
@@ -635,11 +665,11 @@ If you truly cannot find ANY medicines in the image (e.g., the image is not a pr
 {"medicines": []}
 '''
 
-    # Models to try in order (primary, then fallback)
+    # Models to try in order (primary, then fallback) - using valid vision-capable models
     models = [
         "google/gemini-2.0-flash-001",
-        "google/gemini-2.5-flash-preview",
         "google/gemma-3-27b-it:free",
+        "nvidia/nemotron-nano-12b-v2-vl:free",
     ]
 
     last_error = None
@@ -745,7 +775,8 @@ If you truly cannot find ANY medicines in the image (e.g., the image is not a pr
 # ============================================================
 
 @app.get("/reminders/{user_id}")
-def get_reminders(user_id: str, auth: dict = Depends(verify_token)):
+def get_reminders(user_id: str):
+    print(f"[DEBUG] Fetching reminders for user_id: {user_id}")
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -753,24 +784,29 @@ def get_reminders(user_id: str, auth: dict = Depends(verify_token)):
             "SELECT * FROM reminders WHERE user_id=%s ORDER BY time_of_day ASC",
             (user_id,),
         )
-        return [dict(r) for r in cur.fetchall()]
+        reminders = [dict(r) for r in cur.fetchall()]
+        print(f"[DEBUG] Found {len(reminders)} reminders")
+        return reminders
     finally:
         cur.close()
         conn.close()
 
 
 @app.post("/reminders")
-def create_reminder(reminder: ReminderCreate, auth: dict = Depends(verify_token)):
+def create_reminder(reminder: ReminderCreate):
+    print(f"[DEBUG] Creating reminder for patient_id: {reminder.patient_id}")
     conn = get_connection()
     cur = conn.cursor()
     try:
         rid = str(uuid.uuid4())
+        print(f"[DEBUG] Generated reminder ID: {rid}")
+        # Use patient_id directly as user_id so ESP32 can look up by "test_user"
         cur.execute(
             """INSERT INTO reminders
             (id, user_id, patient_id, medicine_name, dosage, frequency, time_of_day,
              repeat_count, repeat_interval_minutes, food_instruction, voice_profile_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (rid, auth["user_id"], reminder.patient_id, reminder.medicine_name,
+            (rid, reminder.patient_id, reminder.patient_id, reminder.medicine_name,
              reminder.dosage, reminder.frequency, reminder.time_of_day,
              reminder.repeat_count, reminder.repeat_interval_minutes,
              reminder.food_instruction, reminder.voice_profile_id),
@@ -1060,6 +1096,20 @@ def delete_music(music_id: str, auth: dict = Depends(verify_token)):
 # DEVICE STATUS ROUTES
 # ============================================================
 
+@app.get("/device/tts")
+def get_device_tts(text: str):
+    """
+    Local proxy for TTS so ESP32 doesn't drop out from slow internet streams.
+    Caches the audio file based on the text hash.
+    """
+    filename = f"tts_{hashlib.md5(text.encode()).hexdigest()}.mp3"
+    filepath = os.path.join(UPLOAD_DIR, "voices", filename)
+    if not os.path.exists(filepath):
+        tts = gTTS(text=text, lang="en", slow=False)
+        tts.save(filepath)
+    return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
+
+
 @app.get("/device/{user_id}")
 def get_device_status(user_id: str, auth: dict = Depends(verify_token)):
     conn = get_connection()
@@ -1095,8 +1145,9 @@ def sync_device(user_id: str, auth: dict = Depends(verify_token)):
 @app.get("/device/pending/{device_id}")
 def get_pending_actions(device_id: str):
     """
-    Called by ESP32 device to get pending reminders/habits.
+    Called by ESP32 device to get all active reminders.
     No auth required (device uses device_id).
+    Returns simple JSON for ArduinoJson parsing.
     """
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1108,44 +1159,19 @@ def get_pending_actions(device_id: str):
             return {"actions": []}
 
         user_id = device["user_id"]
-        now = datetime.now().strftime("%H:%M")
 
-        actions = []
-
-        # Get active reminders for current time
+        # Get ALL active reminders so ESP32 can save them locally for offline RTC logic
         cur.execute(
-            "SELECT medicine_name, dosage, repeat_count, repeat_interval_minutes, food_instruction, voice_profile_id "
-            "FROM reminders WHERE user_id=%s AND is_active=TRUE AND time_of_day=%s",
-            (user_id, now),
+            "SELECT medicine_name, dosage, time_of_day FROM reminders "
+            "WHERE user_id=%s AND is_active=TRUE",
+            (user_id,),
         )
+        actions = []
         for r in cur.fetchall():
-            voice_file = None
-            if r["voice_profile_id"]:
-                cur.execute("SELECT file_url FROM voice_profiles WHERE id=%s", (r["voice_profile_id"],))
-                vp = cur.fetchone()
-                if vp:
-                    voice_file = vp["file_url"]
             actions.append({
-                "type": "medicine",
                 "medicine_name": r["medicine_name"],
                 "dosage": r["dosage"],
-                "repeat": r["repeat_count"],
-                "interval_minutes": r["repeat_interval_minutes"],
-                "food_instruction": r["food_instruction"],
-                "voice_file": voice_file,
-            })
-
-        # Get active habits for current time
-        cur.execute(
-            "SELECT title, duration_minutes FROM habit_routines "
-            "WHERE user_id=%s AND is_active=TRUE AND scheduled_time=%s",
-            (user_id, now),
-        )
-        for h in cur.fetchall():
-            actions.append({
-                "type": "habit",
-                "title": h["title"],
-                "duration": h["duration_minutes"],
+                "time_of_day": r["time_of_day"],
             })
 
         # Update last sync
@@ -1159,7 +1185,6 @@ def get_pending_actions(device_id: str):
     finally:
         cur.close()
         conn.close()
-
 
 # ============================================================
 # SETTINGS ROUTES

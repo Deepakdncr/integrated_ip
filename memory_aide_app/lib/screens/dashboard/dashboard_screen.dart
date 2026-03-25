@@ -40,8 +40,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
-    final userId = await AuthService.getUserId();
-    if (userId == null) return;
+    // final userId = await AuthService.getUserId();
+    // if (userId == null) return;
+    final userId = 'test_user'; // Hardcoded for ESP32 integration
 
     _userId = userId;
     final results = await Future.wait([

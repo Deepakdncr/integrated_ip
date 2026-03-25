@@ -37,11 +37,12 @@ class _HabitsScreenState extends State<HabitsScreen> {
 
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
-    _userId = await AuthService.getUserId();
-    _patientId = await AuthService.getPatientId();
-    if (_userId == null) return;
+    // _userId = await AuthService.getUserId();
+    // _patientId = await AuthService.getPatientId();
+    _userId = 'test_user'; // Hardcoded for ESP32 integration
+    _patientId = 'test_user';
 
-    final data = await ApiService.getHabits(_userId!);
+    final data = await ApiService.getHabits('test_user');
     if (mounted) {
       setState(() {
         _habits = data;

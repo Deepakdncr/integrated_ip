@@ -53,11 +53,12 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
 
   Future<void> _loadVoices() async {
     setState(() => _isLoading = true);
-    _userId = await AuthService.getUserId();
-    _patientId = await AuthService.getPatientId();
-    if (_userId != null) {
-      _voices = await ApiService.getVoices(_userId!);
-    }
+    // _userId = await AuthService.getUserId();
+    // _patientId = await AuthService.getPatientId();
+    _userId = 'test_user'; // Hardcoded for ESP32 integration
+    _patientId = 'test_user';
+    
+    _voices = await ApiService.getVoices(_userId!);
     if (mounted) setState(() => _isLoading = false);
   }
 
