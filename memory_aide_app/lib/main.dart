@@ -3,9 +3,13 @@ import 'config/theme.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/dashboard/dashboard_screen.dart';
 import 'services/auth_service.dart';
+import 'services/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize local notifications (prompts for permission on Android 13+)
+  await NotificationService.initialize();
 
   final bool loggedIn = await AuthService.isLoggedIn();
 

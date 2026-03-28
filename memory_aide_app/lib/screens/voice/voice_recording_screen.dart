@@ -1,3 +1,4 @@
+import 'dart:io' show Directory, File;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -77,14 +78,15 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
         return;
       }
 
-      // Record as WAV (widely supported). On web, the browser picks the codec.
+      // Use high-quality WAV for mobile – the backend will transcode to optimized MP3
+      final path = kIsWeb ? '' : '${Directory.systemTemp.path}/recording.wav';
       await _recorder.start(
         const RecordConfig(
-          encoder: AudioEncoder.wav,
-          sampleRate: 44100,
+          encoder: AudioEncoder.wav, 
+          sampleRate: 44100, 
           numChannels: 1,
         ),
-        path: '', // empty path for in-memory / stream recording on web
+        path: path,
       );
 
       setState(() => _isRecording = true);
@@ -124,16 +126,14 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
       debugPrint('Recording stopped. Path: $path');
 
       if (path != null && path.isNotEmpty) {
-        // On web, `path` is a blob URL (blob:http://...).
-        // On mobile, `path` is a file system path.
-        // In both cases, store it for playback and upload.
+        debugPrint('[Voice] Recording saved to: $path');
         _recordedBlobUrl = path;
-
         setState(() {
           _isRecording = false;
           _hasRecording = true;
         });
       } else {
+        debugPrint('[Voice] Recording path is NULL or empty!');
         setState(() => _isRecording = false);
       }
 
@@ -173,6 +173,7 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
         // On web, play the blob URL directly
         await _audioPlayer.play(UrlSource(_recordedBlobUrl!));
       } else {
+        // Use DeviceFileSource for mobile recordings
         await _audioPlayer.play(DeviceFileSource(_recordedBlobUrl!));
       }
     } catch (e) {
@@ -209,46 +210,110 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
 
     // Show name dialog
     final nameCtrl = TextEditingController(text: 'Voice Recording');
-    final name = await showDialog<String>(
+    bool isEveryday = true;
+    Set<String> selectedDays = {};
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Name this recording',
-            style: TextStyle(fontWeight: FontWeight.w700)),
-        content: TextField(
-          controller: nameCtrl,
-          style: const TextStyle(fontSize: 17),
-          decoration: const InputDecoration(
-            labelText: 'Recording Name',
-            hintText: 'e.g. Mom\'s Voice',
-            prefixIcon: Icon(Icons.label_outlined, size: 22),
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Save Voice Recording',
+              style: TextStyle(fontWeight: FontWeight.w700)),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  style: const TextStyle(fontSize: 17),
+                  decoration: const InputDecoration(
+                    labelText: 'Recording Name',
+                    hintText: 'e.g. Mom\'s Voice',
+                    prefixIcon: Icon(Icons.label_outlined, size: 22),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _VoiceDaysSelector(
+                  isEveryday: isEveryday,
+                  selectedDays: selectedDays,
+                  days: days,
+                  onChanged: (everyday, d) {
+                    setDialogState(() {
+                      isEveryday = everyday;
+                      selectedDays = d;
+                    });
+                  },
+                ),
+              ],
+            ),
           ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actions: [
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () => Navigator.pop(ctx, {
+                      'name': nameCtrl.text.trim(),
+                      'daysStr': isEveryday
+                          ? 'everyday'
+                          : (selectedDays.isEmpty
+                              ? 'everyday'
+                              : selectedDays.join(',')),
+                    }),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C3AED),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Save'),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, nameCtrl.text.trim()),
-            child: const Text('Save'),
-          ),
-        ],
       ),
     );
 
-    if (name == null || name.isEmpty) return;
+    if (result == null || result['name'].isEmpty) return;
+    final name = result['name'];
+    final daysStr = result['daysStr'];
 
     setState(() => _isLoading = true);
 
     bool success = false;
 
     if (kIsWeb && _recordedBlobUrl != null) {
-      // On web, upload blob via special method
+      debugPrint('[Voice] Uploading blob from web: $_recordedBlobUrl');
       success = await ApiService.uploadVoiceFromBlobUrl(
-          _recordedBlobUrl!, name, _patientId!, timeStr);
+          _recordedBlobUrl!, name, _patientId!, timeStr, daysStr);
     } else if (_recordedBlobUrl != null) {
-      // Mobile - read file and upload
+      debugPrint('[Voice] Uploading file from mobile: $_recordedBlobUrl');
       success = await ApiService.uploadVoiceFromFilePath(
-          _recordedBlobUrl!, name, _patientId!, timeStr);
+          _recordedBlobUrl!, name, _patientId!, timeStr, daysStr);
+      
+      // Clean up the temp file after attempt
+      try {
+        final file = File(_recordedBlobUrl!);
+        if (await file.exists()) {
+          await file.delete();
+          debugPrint('[Voice] Temp file deleted.');
+        }
+      } catch (e) {
+        debugPrint('[Voice] Cleanup error: $e');
+      }
     }
 
     if (mounted) {
@@ -305,6 +370,79 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
       await ApiService.deleteVoice(id);
       _loadVoices();
     }
+  }
+
+  void _editVoice(Map<String, dynamic> v) {
+    final nameCtrl = TextEditingController(text: v['name'] ?? '');
+    final timeStr = v['scheduled_time'] ?? '08:00';
+    int hour = int.tryParse(timeStr.split(':')[0]) ?? 8;
+    int minute = int.tryParse(timeStr.split(':')[1]) ?? 0;
+    TimeOfDay selectedTime = TimeOfDay(hour: hour, minute: minute);
+    final daysRaw = v['days_of_week'] ?? 'everyday';
+    bool isEveryday = daysRaw == 'everyday';
+    Set<String> selectedDays = isEveryday ? {} : daysRaw.toString().split(',').toSet();
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(children: [
+            Icon(Icons.edit_rounded, color: Color(0xFF7C3AED), size: 28),
+            SizedBox(width: 10),
+            Text('Edit Voice', style: TextStyle(fontWeight: FontWeight.w700)),
+          ]),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(controller: nameCtrl, style: const TextStyle(fontSize: 17),
+                decoration: const InputDecoration(labelText: 'Recording Name', prefixIcon: Icon(Icons.label_outlined, size: 22))),
+              const SizedBox(height: 16),
+              InkWell(
+                onTap: () async {
+                  final t = await showTimePicker(context: context, initialTime: selectedTime);
+                  if (t != null) setDialogState(() => selectedTime = t);
+                },
+                borderRadius: BorderRadius.circular(14),
+                child: InputDecorator(
+                  decoration: const InputDecoration(labelText: 'Alarm Time', prefixIcon: Icon(Icons.schedule_rounded, size: 22)),
+                  child: Text(selectedTime.format(context), style: const TextStyle(fontSize: 17)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              _VoiceDaysSelector(isEveryday: isEveryday, selectedDays: selectedDays, days: days,
+                onChanged: (everyday, d) { setDialogState(() { isEveryday = everyday; selectedDays = d; }); }),
+            ]),
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actions: [
+            Row(children: [
+              Expanded(child: OutlinedButton(onPressed: () => Navigator.pop(ctx),
+                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Cancel'))),
+              const SizedBox(width: 12),
+              Expanded(child: FilledButton(
+                onPressed: () async {
+                  final t = '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
+                  final d = isEveryday ? 'everyday' : (selectedDays.isEmpty ? 'everyday' : selectedDays.join(','));
+                  final success = await ApiService.updateVoice(v['id'], {
+                    'name': nameCtrl.text.trim(),
+                    'scheduled_time': t,
+                    'days_of_week': d,
+                  });
+                  if (!context.mounted) return;
+                  Navigator.pop(ctx);
+                  if (success) { _loadVoices(); ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Voice updated!'), backgroundColor: CareSoulTheme.success)); }
+                },
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF7C3AED), padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Save'),
+              )),
+            ]),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -515,11 +653,25 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                             title: Text(v['name'] ?? 'Voice',
                                 style: const TextStyle(
                                     fontWeight: FontWeight.w600, fontSize: 16)),
-                            subtitle: v['scheduled_time'] != null
-                                ? Text('⏰ ${v['scheduled_time']}',
-                                    style: TextStyle(
-                                        fontSize: 13, color: Colors.grey[600]))
-                                : null,
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (v['scheduled_time'] != null)
+                                  Text('⏰ ${v['scheduled_time']}',
+                                      style: TextStyle(
+                                          fontSize: 13, color: Colors.grey[600])),
+                                Text(
+                                  () {
+                                    final d = v['days_of_week'] ?? 'everyday';
+                                    return d == 'everyday' ? '📅 Everyday' : '📅 $d';
+                                  }(),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey[500],
+                                  ),
+                                ),
+                              ],
+                            ),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -581,11 +733,35 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                                     if (success) _loadVoices();
                                   },
                                 ),
-                                IconButton(
-                                  icon: Icon(Icons.delete_outline_rounded,
-                                      color: Colors.red[400]),
-                                  onPressed: () => _deleteVoice(
-                                      v['id'], v['name'] ?? 'Voice'),
+                                PopupMenuButton<String>(
+                                  icon: Icon(Icons.more_vert_rounded, color: Colors.grey[600]),
+                                  padding: EdgeInsets.zero,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  onSelected: (value) {
+                                    if (value == 'edit') {
+                                      _editVoice(v);
+                                    } else if (value == 'delete') {
+                                      _deleteVoice(v['id'], v['name'] ?? 'Voice');
+                                    }
+                                  },
+                                  itemBuilder: (context) => [
+                                    PopupMenuItem(
+                                      value: 'edit',
+                                      child: Row(children: [
+                                        Icon(Icons.edit_outlined, color: Colors.blue[600], size: 20),
+                                        const SizedBox(width: 12),
+                                        const Text('Edit'),
+                                      ]),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'delete',
+                                      child: Row(children: [
+                                        Icon(Icons.delete_outline_rounded, color: Colors.red[600], size: 20),
+                                        const SizedBox(width: 12),
+                                        const Text('Delete', style: TextStyle(color: Colors.red)),
+                                      ]),
+                                    ),
+                                  ],
                                 ),
                               ],
                             ),
@@ -597,6 +773,78 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                 ],
               ),
             ),
+    );
+  }
+}
+
+class _VoiceDaysSelector extends StatelessWidget {
+  final bool isEveryday;
+  final Set<String> selectedDays;
+  final List<String> days;
+  final void Function(bool everyday, Set<String> days) onChanged;
+
+  const _VoiceDaysSelector({
+    required this.isEveryday,
+    required this.selectedDays,
+    required this.days,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Repeat Days',
+          style: TextStyle(
+            fontSize: 14,
+            color: Color(0xFF6B7280),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        InkWell(
+          onTap: () => onChanged(!isEveryday, isEveryday ? {} : selectedDays),
+          borderRadius: BorderRadius.circular(10),
+          child: Row(
+            children: [
+              Checkbox(
+                value: isEveryday,
+                activeColor: const Color(0xFF7C3AED),
+                onChanged: (v) => onChanged(v ?? true, {}),
+              ),
+              const Text('Everyday',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+        if (!isEveryday) ...[
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            children: days.map((d) {
+              final selected = selectedDays.contains(d);
+              return FilterChip(
+                label: Text(d,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: selected ? Colors.white : Colors.grey[600])),
+                selected: selected,
+                selectedColor: const Color(0xFF7C3AED),
+                checkmarkColor: Colors.white,
+                backgroundColor: Colors.grey[100],
+                onSelected: (v) {
+                  final nd = Set<String>.from(selectedDays);
+                  if (v) nd.add(d); else nd.remove(d);
+                  onChanged(false, nd);
+                },
+              );
+            }).toList(),
+          ),
+        ],
+      ],
     );
   }
 }

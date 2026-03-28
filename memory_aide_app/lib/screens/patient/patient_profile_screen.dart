@@ -40,7 +40,8 @@ class _PatientProfileScreenState extends State<PatientProfileScreen> {
   }
 
   Future<void> _loadProfile() async {
-    _userId = await AuthService.getUserId();
+    // _userId = await AuthService.getUserId();
+    _userId = 'test_user';
     if (_userId == null) return;
 
     final data = await ApiService.getPatient(_userId!);

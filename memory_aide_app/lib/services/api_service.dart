@@ -12,7 +12,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse(ApiConfig.patientUrl(userId)),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
       );
       if (response.statusCode == 200) return jsonDecode(response.body);
     } catch (e) {
@@ -26,7 +26,7 @@ class ApiService {
     try {
       final response = await http.put(
         Uri.parse(ApiConfig.patientUrl(userId)),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(data),
       );
       return response.statusCode == 200;
@@ -41,8 +41,6 @@ class ApiService {
     try {
       final request = http.MultipartRequest(
           'POST', Uri.parse(ApiConfig.patientPhotoUrl(userId)));
-      final token = await AuthService.getToken();
-      request.headers['Authorization'] = 'Bearer ${token ?? ''}';
       request.files
           .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       final response = await request.send();
@@ -152,13 +150,26 @@ class ApiService {
     }
   }
 
+  static Future<bool> deleteAllReminders(String userId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse(ApiConfig.remindersAllUrl(userId)),
+        headers: await AuthService.authHeaders(),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('deleteAllReminders error: $e');
+      return false;
+    }
+  }
+
   // ============ HABITS ============
 
   static Future<List<Map<String, dynamic>>> getHabits(String userId) async {
     try {
       final response = await http.get(
         Uri.parse(ApiConfig.habitsUrl(userId)),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
       );
       if (response.statusCode == 200) {
         return List<Map<String, dynamic>>.from(jsonDecode(response.body));
@@ -173,7 +184,7 @@ class ApiService {
     try {
       final response = await http.post(
         Uri.parse(ApiConfig.habitCreateUrl),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
         body: jsonEncode(data),
       );
       return response.statusCode == 200;
@@ -216,7 +227,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse(ApiConfig.voicesUrl(userId)),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
       );
       if (response.statusCode == 200) {
         return List<Map<String, dynamic>>.from(jsonDecode(response.body));
@@ -228,15 +239,14 @@ class ApiService {
   }
 
   static Future<bool> uploadVoice(List<int> bytes, String filename, String name,
-      String patientId, String time) async {
+      String patientId, String time, String daysOfWeek) async {
     try {
       final request =
           http.MultipartRequest('POST', Uri.parse(ApiConfig.voiceUploadUrl));
-      final token = await AuthService.getToken();
-      request.headers['Authorization'] = 'Bearer ${token ?? ''}';
       request.fields['name'] = name;
       request.fields['patient_id'] = patientId;
       request.fields['scheduled_time'] = time;
+      request.fields['days_of_week'] = daysOfWeek;
       request.files
           .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       final response = await request.send();
@@ -254,13 +264,13 @@ class ApiService {
 
   /// Upload voice from a blob URL (web) by fetching it first
   static Future<bool> uploadVoiceFromBlobUrl(
-      String blobUrl, String name, String patientId, String time) async {
+      String blobUrl, String name, String patientId, String time, String daysOfWeek) async {
     try {
       // Fetch the blob data via HTTP
       final blobResponse = await http.get(Uri.parse(blobUrl));
       if (blobResponse.statusCode == 200) {
-        return uploadVoice(blobResponse.bodyBytes.toList(), 'recording.webm',
-            name, patientId, time);
+        return uploadVoice(blobResponse.bodyBytes.toList(), 'recording.wav',
+            name, patientId, time, daysOfWeek);
       }
       debugPrint('Failed to fetch blob: ${blobResponse.statusCode}');
       return false;
@@ -272,15 +282,14 @@ class ApiService {
 
   /// Upload voice from a file path (mobile)
   static Future<bool> uploadVoiceFromFilePath(
-      String filePath, String name, String patientId, String time) async {
+      String filePath, String name, String patientId, String time, String daysOfWeek) async {
     try {
       final request =
           http.MultipartRequest('POST', Uri.parse(ApiConfig.voiceUploadUrl));
-      final token = await AuthService.getToken();
-      request.headers['Authorization'] = 'Bearer ${token ?? ''}';
       request.fields['name'] = name;
       request.fields['patient_id'] = patientId;
       request.fields['scheduled_time'] = time;
+      request.fields['days_of_week'] = daysOfWeek;
       request.files.add(await http.MultipartFile.fromPath('file', filePath));
       final response = await request.send();
       return response.statusCode == 200;
@@ -323,7 +332,7 @@ class ApiService {
     try {
       final response = await http.get(
         Uri.parse(ApiConfig.musicListUrl(userId)),
-        headers: await AuthService.authHeaders(),
+        headers: const {'Content-Type': 'application/json'},
       );
       if (response.statusCode == 200) {
         return List<Map<String, dynamic>>.from(jsonDecode(response.body));
@@ -335,21 +344,45 @@ class ApiService {
   }
 
   static Future<bool> uploadMusic(List<int> bytes, String filename,
-      String title, String patientId, String time) async {
+      String title, String patientId, String time, String daysOfWeek) async {
     try {
       final request =
           http.MultipartRequest('POST', Uri.parse(ApiConfig.musicUploadUrl));
-      final token = await AuthService.getToken();
-      request.headers['Authorization'] = 'Bearer ${token ?? ''}';
+      // No auth header needed – backend now accepts without token
       request.fields['title'] = title;
       request.fields['patient_id'] = patientId;
       request.fields['scheduled_time'] = time;
+      request.fields['days_of_week'] = daysOfWeek;
       request.files
           .add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
       final response = await request.send();
+      debugPrint('uploadMusic status: ${response.statusCode}');
+      if (response.statusCode != 200) {
+        final body = await response.stream.bytesToString();
+        debugPrint('uploadMusic response: $body');
+      }
       return response.statusCode == 200;
     } catch (e) {
       debugPrint('uploadMusic error: $e');
+      return false;
+    }
+  }
+
+  /// Upload music from a file path (mobile)
+  static Future<bool> uploadMusicFromFilePath(
+      String filePath, String title, String patientId, String time, String daysOfWeek) async {
+    try {
+      final request =
+          http.MultipartRequest('POST', Uri.parse(ApiConfig.musicUploadUrl));
+      request.fields['title'] = title;
+      request.fields['patient_id'] = patientId;
+      request.fields['scheduled_time'] = time;
+      request.fields['days_of_week'] = daysOfWeek;
+      request.files.add(await http.MultipartFile.fromPath('file', filePath));
+      final response = await request.send();
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('uploadMusicFromFilePath error: $e');
       return false;
     }
   }
@@ -405,6 +438,19 @@ class ApiService {
       return response.statusCode == 200;
     } catch (e) {
       debugPrint('syncDevice error: $e');
+      return false;
+    }
+  }
+
+  static Future<bool> stopSOS(String deviceId) async {
+    try {
+      final response = await http.delete(
+        Uri.parse(ApiConfig.sosStopUrl(deviceId)),
+        headers: await AuthService.authHeaders(),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('stopSOS error: $e');
       return false;
     }
   }

@@ -31,6 +31,7 @@ class ApiConfig {
   static String remindersUrl(String userId) => '$baseUrl/reminders/$userId';
   static String get reminderCreateUrl => '$baseUrl/reminders';
   static String reminderUrl(String id) => '$baseUrl/reminders/$id';
+  static String remindersAllUrl(String userId) => '$baseUrl/reminders/all/$userId';
 
   // Habits
   static String habitsUrl(String userId) => '$baseUrl/habits/$userId';
@@ -53,6 +54,9 @@ class ApiConfig {
 
   // Settings
   static String settingsUrl(String userId) => '$baseUrl/settings/$userId';
+
+  // SOS
+  static String sosStopUrl(String deviceId) => '$baseUrl/sos/stop/$deviceId';
 
   // File URL helper
   static String fileUrl(String path) => '$baseUrl$path';

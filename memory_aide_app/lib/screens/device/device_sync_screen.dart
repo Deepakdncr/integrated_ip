@@ -25,7 +25,7 @@ class _DeviceSyncScreenState extends State<DeviceSyncScreen> {
 
   Future<void> _loadDevice() async {
     setState(() => _isLoading = true);
-    _userId = await AuthService.getUserId();
+    _userId = 'test_user'; // Hardcoded for ESP32 matching
     if (_userId != null) {
       _device = await ApiService.getDeviceStatus(_userId!);
     }

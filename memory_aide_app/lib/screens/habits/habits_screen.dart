@@ -94,6 +94,84 @@ class _HabitsScreenState extends State<HabitsScreen> {
     }
   }
 
+  void _editHabit(Map<String, dynamic> h) {
+    final titleCtrl = TextEditingController(text: h['title'] ?? '');
+    final durationCtrl = TextEditingController(text: (h['duration_minutes'] ?? 0).toString());
+    final timeStr = h['scheduled_time'] ?? '09:00';
+    int hour = int.tryParse(timeStr.split(':')[0]) ?? 9;
+    int minute = int.tryParse(timeStr.split(':')[1]) ?? 0;
+    TimeOfDay selectedTime = TimeOfDay(hour: hour, minute: minute);
+    final daysRaw = h['days_of_week'] ?? 'everyday';
+    bool isEveryday = daysRaw == 'everyday';
+    Set<String> selectedDays = isEveryday ? {} : daysRaw.toString().split(',').toSet();
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Row(children: [
+            Icon(Icons.edit_rounded, color: Color(0xFFF59E0B), size: 28),
+            SizedBox(width: 10),
+            Text('Edit Habit', style: TextStyle(fontWeight: FontWeight.w700)),
+          ]),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              TextField(controller: titleCtrl, style: const TextStyle(fontSize: 17),
+                decoration: const InputDecoration(labelText: 'Routine Title', prefixIcon: Icon(Icons.edit_outlined, size: 22))),
+              const SizedBox(height: 16),
+              TextField(controller: durationCtrl, keyboardType: TextInputType.number, style: const TextStyle(fontSize: 17),
+                decoration: const InputDecoration(labelText: 'Duration (minutes)', prefixIcon: Icon(Icons.timer_outlined, size: 22))),
+              const SizedBox(height: 16),
+              InkWell(
+                onTap: () async {
+                  final t = await showTimePicker(context: context, initialTime: selectedTime);
+                  if (t != null) setDialogState(() => selectedTime = t);
+                },
+                borderRadius: BorderRadius.circular(14),
+                child: InputDecorator(
+                  decoration: const InputDecoration(labelText: 'Scheduled Time', prefixIcon: Icon(Icons.schedule_rounded, size: 22)),
+                  child: Text(selectedTime.format(context), style: const TextStyle(fontSize: 17)),
+                ),
+              ),
+              const SizedBox(height: 12),
+              _HabitDaysSelector(isEveryday: isEveryday, selectedDays: selectedDays, days: days,
+                onChanged: (everyday, d) { setDialogState(() { isEveryday = everyday; selectedDays = d; }); }),
+            ]),
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actions: [
+            Row(children: [
+              Expanded(child: OutlinedButton(onPressed: () => Navigator.pop(ctx),
+                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Cancel'))),
+              const SizedBox(width: 12),
+              Expanded(child: FilledButton(
+                onPressed: () async {
+                  final t = '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
+                  final d = isEveryday ? 'everyday' : (selectedDays.isEmpty ? 'everyday' : selectedDays.join(','));
+                  final success = await ApiService.updateHabit(h['id'], {
+                    'title': titleCtrl.text.trim(),
+                    'duration_minutes': int.tryParse(durationCtrl.text.trim()) ?? 0,
+                    'scheduled_time': t,
+                    'days_of_week': d,
+                  });
+                  if (!context.mounted) return;
+                  Navigator.pop(ctx);
+                  if (success) { _loadData(); ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Habit updated!'), backgroundColor: CareSoulTheme.success)); }
+                },
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF59E0B), padding: const EdgeInsets.symmetric(vertical: 12)),
+                child: const Text('Save'),
+              )),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showAddDialog(
       {String? presetTitle, String? presetTime, int? presetDuration}) {
     final titleCtrl = TextEditingController(text: presetTitle ?? '');
@@ -107,6 +185,9 @@ class _HabitsScreenState extends State<HabitsScreen> {
       minute = int.tryParse(presetTime.split(':')[1]) ?? 0;
     }
     TimeOfDay selectedTime = TimeOfDay(hour: hour, minute: minute);
+    bool isEveryday = true;
+    Set<String> selectedDays = {};
+    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
     showDialog(
       context: context,
@@ -172,6 +253,19 @@ class _HabitsScreenState extends State<HabitsScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                // Days of week
+                _HabitDaysSelector(
+                  isEveryday: isEveryday,
+                  selectedDays: selectedDays,
+                  days: days,
+                  onChanged: (everyday, d) {
+                    setDialogState(() {
+                      isEveryday = everyday;
+                      selectedDays = d;
+                    });
+                  },
+                ),
+                const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -200,45 +294,65 @@ class _HabitsScreenState extends State<HabitsScreen> {
               ],
             ),
           ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            FilledButton.icon(
-              onPressed: () async {
-                if (titleCtrl.text.trim().isEmpty || _patientId == null) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Please enter routine title')),
-                  );
-                  return;
-                }
-                final timeStr =
-                    '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
-                final success = await ApiService.createHabit({
-                  'patient_id': _patientId,
-                  'title': titleCtrl.text.trim(),
-                  'duration_minutes':
-                      int.tryParse(durationCtrl.text.trim()) ?? 0,
-                  'scheduled_time': timeStr,
-                });
-                if (!context.mounted) return;
-                Navigator.pop(ctx);
-                if (success) {
-                  _loadData();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Habit routine added!'),
-                      backgroundColor: CareSoulTheme.success,
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                  );
-                }
-              },
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('Add Routine'),
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFF59E0B),
-              ),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton(
+                    onPressed: () async {
+                      if (titleCtrl.text.trim().isEmpty || _patientId == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content: Text('Please enter routine title')),
+                        );
+                        return;
+                      }
+                      final timeStr =
+                          '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
+                      final daysStr = isEveryday
+                          ? 'everyday'
+                          : (selectedDays.isEmpty
+                              ? 'everyday'
+                              : selectedDays.join(','));
+                      final success = await ApiService.createHabit({
+                        'patient_id': _patientId,
+                        'title': titleCtrl.text.trim(),
+                        'duration_minutes':
+                            int.tryParse(durationCtrl.text.trim()) ?? 0,
+                        'scheduled_time': timeStr,
+                        'days_of_week': daysStr,
+                      });
+                      if (!context.mounted) return;
+                      Navigator.pop(ctx);
+                      if (success) {
+                        _loadData();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Routine added!'),
+                            backgroundColor: CareSoulTheme.success,
+                          ),
+                        );
+                      }
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFF59E0B),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Save'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -431,6 +545,17 @@ class _HabitsScreenState extends State<HabitsScreen> {
                                         ],
                                       ],
                                     ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      () {
+                                        final d = h['days_of_week'] ?? 'everyday';
+                                        return d == 'everyday' ? '📅 Everyday' : '📅 $d';
+                                      }(),
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.grey[500],
+                                      ),
+                                    ),
                                   ],
                                 ),
                               ),
@@ -442,10 +567,35 @@ class _HabitsScreenState extends State<HabitsScreen> {
                                     onChanged: (val) =>
                                         _toggleActive(h['id'], val),
                                   ),
-                                  GestureDetector(
-                                    onTap: () => _deleteHabit(h['id']),
-                                    child: Icon(Icons.delete_outline_rounded,
-                                        color: Colors.red[300], size: 22),
+                                  PopupMenuButton<String>(
+                                    icon: Icon(Icons.more_vert_rounded, color: Colors.grey[600]),
+                                    padding: EdgeInsets.zero,
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    onSelected: (value) {
+                                      if (value == 'edit') {
+                                        _editHabit(h);
+                                      } else if (value == 'delete') {
+                                        _deleteHabit(h['id']);
+                                      }
+                                    },
+                                    itemBuilder: (context) => [
+                                      PopupMenuItem(
+                                        value: 'edit',
+                                        child: Row(children: [
+                                          Icon(Icons.edit_outlined, color: Colors.blue[600], size: 20),
+                                          const SizedBox(width: 12),
+                                          const Text('Edit'),
+                                        ]),
+                                      ),
+                                      PopupMenuItem(
+                                        value: 'delete',
+                                        child: Row(children: [
+                                          Icon(Icons.delete_outline_rounded, color: Colors.red[600], size: 20),
+                                          const SizedBox(width: 12),
+                                          const Text('Delete', style: TextStyle(color: Colors.red)),
+                                        ]),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
@@ -456,6 +606,79 @@ class _HabitsScreenState extends State<HabitsScreen> {
                     },
                   ),
                 ),
+    );
+  }
+}
+
+/// Reusable days-of-week selector (copied pattern from reminders_screen).
+class _HabitDaysSelector extends StatelessWidget {
+  final bool isEveryday;
+  final Set<String> selectedDays;
+  final List<String> days;
+  final void Function(bool everyday, Set<String> days) onChanged;
+
+  const _HabitDaysSelector({
+    required this.isEveryday,
+    required this.selectedDays,
+    required this.days,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          'Repeat Days',
+          style: TextStyle(
+            fontSize: 14,
+            color: Color(0xFF78716C),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: 8),
+        InkWell(
+          onTap: () => onChanged(!isEveryday, isEveryday ? {} : selectedDays),
+          borderRadius: BorderRadius.circular(10),
+          child: Row(
+            children: [
+              Checkbox(
+                value: isEveryday,
+                activeColor: const Color(0xFFF59E0B),
+                onChanged: (v) => onChanged(v ?? true, {}),
+              ),
+              const Text('Everyday',
+                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+        if (!isEveryday) ...[
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            children: days.map((d) {
+              final selected = selectedDays.contains(d);
+              return FilterChip(
+                label: Text(d,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: selected ? Colors.white : Colors.grey[600])),
+                selected: selected,
+                selectedColor: const Color(0xFFF59E0B),
+                checkmarkColor: Colors.white,
+                backgroundColor: Colors.grey[100],
+                onSelected: (v) {
+                  final nd = Set<String>.from(selectedDays);
+                  if (v) nd.add(d); else nd.remove(d);
+                  onChanged(false, nd);
+                },
+              );
+            }).toList(),
+          ),
+        ],
+      ],
     );
   }
 }

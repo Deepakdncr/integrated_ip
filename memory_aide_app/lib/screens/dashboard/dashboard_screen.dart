@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../services/api_service.dart';
@@ -13,8 +14,8 @@ import '../reminders/reminders_screen.dart';
 import '../habits/habits_screen.dart';
 import '../voice/voice_recording_screen.dart';
 import '../music/music_scheduler_screen.dart';
-import '../device/device_sync_screen.dart';
 import '../settings/settings_screen.dart';
+import '../../services/notification_service.dart';
 
 /// Main dashboard – caregiver home screen.
 /// Shows Patient Overview, Quick Actions, and Device Status.
@@ -32,10 +33,138 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isLoading = true;
   String? _userId;
 
+  Timer? _sosTimer;
+  bool _isShowingSos = false;
+
   @override
   void initState() {
     super.initState();
     _loadData();
+    _startSosPolling();
+  }
+
+  @override
+  void dispose() {
+    _sosTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startSosPolling() {
+    _sosTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _checkSosStatus();
+    });
+  }
+
+  Future<void> _checkSosStatus() async {
+    if (_userId == null) return;
+    try {
+      final deviceResult = await ApiService.getDeviceStatus(_userId!);
+      if (deviceResult != null) {
+        final bool sosActive = deviceResult['sos_active'] == true;
+        
+        if (mounted) {
+          setState(() {
+            _device = deviceResult; // Keep device status updated
+          });
+          
+          if (sosActive && !_isShowingSos) {
+            NotificationService.showSosNotification();
+            _showSosAlert(deviceResult['device_id'] ?? 'ESP32-001');
+          }
+        }
+      }
+    } catch (e) {
+      // Ignore background errors
+    }
+  }
+
+  void _showSosAlert(String deviceId) {
+    if (_isShowingSos) return;
+    _isShowingSos = true;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false, // Force them to deal with it
+      builder: (context) {
+        return PopScope(
+          canPop: false,
+          child: Dialog(
+            backgroundColor: const Color(0xFFEF4444), // Strong red
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            child: Padding(
+              padding: const EdgeInsets.all(32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 80,
+                    height: 80,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withAlpha(50),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(Icons.warning_amber_rounded, size: 48, color: Colors.white),
+                  ),
+                  const SizedBox(height: 24),
+                  const Text(
+                    'EMERGENCY SOS',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 26,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.5,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Patient has triggered the SOS button on the CareSoul device!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      height: 1.5,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: FilledButton(
+                      style: FilledButton.styleFrom(
+                        backgroundColor: Colors.white,
+                        foregroundColor: const Color(0xFFEF4444),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                      onPressed: () async {
+                        // Optimistically close
+                        Navigator.of(context).pop();
+                        _isShowingSos = false;
+                        
+                        // Send stop command
+                        await ApiService.stopSOS(deviceId);
+                        
+                        // Refresh data
+                        if (mounted) _loadData();
+                      },
+                      child: const Text(
+                        'STOP ALARM',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _loadData() async {
@@ -45,24 +174,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final userId = 'test_user'; // Hardcoded for ESP32 integration
 
     _userId = userId;
+    final remindersResult = ApiService.getReminders(userId);
+    final habitsResult    = ApiService.getHabits(userId);
+    final musicResult     = ApiService.getMusic(userId);
+    final deviceResult    = ApiService.getDeviceStatus(userId);
+
     final results = await Future.wait([
-      ApiService.getPatient(userId),
-      ApiService.getDeviceStatus(userId),
-      ApiService.getReminders(userId),
-      ApiService.getHabits(userId),
-      ApiService.getMusic(userId),
+      remindersResult,
+      habitsResult,
+      musicResult,
+      deviceResult,
     ]);
+
+    // Patient profile is optional – may fail if test_user profile doesn't exist
+    Map<String, dynamic>? patient;
+    try {
+      patient = await ApiService.getPatient(userId);
+    } catch (_) {}
 
     if (mounted) {
       setState(() {
-        _patient = results[0] as Map<String, dynamic>?;
-        _device = results[1] as Map<String, dynamic>?;
+        _patient = patient;
+        _device = results[3] as Map<String, dynamic>?;
 
         final reminders =
-            (results[2] as List?)?.cast<Map<String, dynamic>>() ?? [];
+            (results[0] as List?)?.cast<Map<String, dynamic>>() ?? [];
         final habits =
-            (results[3] as List?)?.cast<Map<String, dynamic>>() ?? [];
-        final music = (results[4] as List?)?.cast<Map<String, dynamic>>() ?? [];
+            (results[1] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        final music = (results[2] as List?)?.cast<Map<String, dynamic>>() ?? [];
 
         _upcomingEvent = _getUpcomingEvent(reminders, habits, music);
         _isLoading = false;
@@ -137,7 +276,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _syncDevice() async {
-    if (_userId == null) return;
+    const userId = 'test_user'; 
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -156,7 +295,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         duration: const Duration(seconds: 2),
       ),
     );
-    final success = await ApiService.syncDevice(_userId!);
+    final success = await ApiService.syncDevice(userId);
     if (mounted) {
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -218,6 +357,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.sync_rounded),
+            tooltip: 'Sync Device',
+            onPressed: _syncDevice,
+          ),
           IconButton(
             icon: const Icon(Icons.settings_rounded),
             tooltip: 'Settings',
@@ -469,7 +613,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const RemindersScreen()),
-          ),
+          ).then((_) => _loadData()),
         ),
         QuickActionCard(
           icon: Icons.directions_walk_rounded,
@@ -478,7 +622,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const HabitsScreen()),
-          ),
+          ).then((_) => _loadData()),
         ),
         QuickActionCard(
           icon: Icons.mic_rounded,
@@ -487,7 +631,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const VoiceRecordingScreen()),
-          ),
+          ).then((_) => _loadData()),
         ),
         QuickActionCard(
           icon: Icons.document_scanner_rounded,
@@ -496,7 +640,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const PrescriptionOcrScreen()),
-          ),
+          ).then((_) => _loadData()),
         ),
         QuickActionCard(
           icon: Icons.music_note_rounded,
@@ -505,17 +649,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const MusicSchedulerScreen()),
-          ),
-        ),
-        QuickActionCard(
-          icon: Icons.devices_rounded,
-          label: 'Device Sync',
-          color: const Color(0xFF64748B),
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const DeviceSyncScreen()),
           ).then((_) => _loadData()),
         ),
+
       ],
     );
   }
@@ -564,12 +700,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        _device?['device_id'] ?? 'ESP32-001',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey[500],
-                          fontWeight: FontWeight.w500,
+                      Expanded(
+                        child: Text(
+                          _device?['device_id'] ?? 'ESP32-001',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[500],
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ),
                     ],

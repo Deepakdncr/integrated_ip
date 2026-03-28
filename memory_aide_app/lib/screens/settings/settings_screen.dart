@@ -3,6 +3,7 @@ import '../../services/api_service.dart';
 import '../../services/auth_service.dart';
 import '../../config/theme.dart';
 import '../auth/login_screen.dart';
+import '../device/device_sync_screen.dart';
 
 /// Settings screen – volume control (3-level) and language (English/Tamil only).
 /// Saves to backend API on change.
@@ -27,7 +28,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadSettings() async {
-    _userId = await AuthService.getUserId();
+    _userId = 'test_user'; // Map to ESP32 test_user
     if (_userId != null) {
       final data = await ApiService.getSettings(_userId!);
       if (mounted && data != null) {
@@ -311,6 +312,73 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                   const SizedBox(height: 20),
 
+                  // ── Device Sync Section ──
+                  Container(
+                    decoration: CareSoulTheme.cardDecoration,
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF64748B)
+                                    .withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Icon(
+                                Icons.devices_rounded,
+                                color: Color(0xFF64748B),
+                                size: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'IoT Device Sync',
+                                    style: TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  SizedBox(height: 2),
+                                  Text(
+                                    'Force sync ESP32 hardware',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: CareSoulTheme.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const DeviceSyncScreen()),
+                          ).then((_) => _loadSettings()),
+                          icon: const Icon(Icons.sync_rounded, size: 20),
+                          label: const Text('Open Device Sync', 
+                              style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: const Color(0xFF64748B),
+                            minimumSize: const Size(0, 52),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
                   // ── App Info Section ──
                   Container(
                     decoration: CareSoulTheme.cardDecoration,
@@ -336,25 +404,33 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 20),
 
                   // ── Logout Button ──
-                  OutlinedButton.icon(
-                    onPressed: _logout,
-                    icon: const Icon(Icons.logout_rounded,
-                        color: CareSoulTheme.error),
-                    label: const Text('Logout',
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _logout,
+                      icon: const Icon(Icons.logout_rounded, color: CareSoulTheme.error),
+                      label: const Text(
+                        'Logout Account',
                         style: TextStyle(
-                            color: CareSoulTheme.error,
-                            fontSize: 17,
-                            fontWeight: FontWeight.w700)),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(
-                          color: CareSoulTheme.error, width: 1.5),
-                      minimumSize: const Size(double.infinity, 56),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: CareSoulTheme.error,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: CareSoulTheme.error, width: 1.5),
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(CareSoulTheme.radiusLg),
+                        ),
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 20),
+
+                  const SizedBox(height: 32),
                 ],
               ),
             ),

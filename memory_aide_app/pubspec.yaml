@@ -38,6 +38,7 @@ dependencies:
   # Path utilities
   path: ^1.9.0
   pinput: ^6.0.2
+  flutter_local_notifications: 18.0.0
 
 dependency_overrides:
   record: 5.1.2

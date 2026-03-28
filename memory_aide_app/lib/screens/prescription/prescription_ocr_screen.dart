@@ -135,6 +135,8 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
         TextEditingController(text: med['dosage'] ?? '');
     final frequencyCtrl =
         TextEditingController(text: med['frequency'] ?? '');
+    final durationCtrl =
+        TextEditingController(text: med['duration_days'] ?? '');
     final timeCtrl =
         TextEditingController(text: med['time_of_day'] ?? '08:00');
 
@@ -209,6 +211,21 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
               ),
               const SizedBox(height: 14),
               TextField(
+                controller: durationCtrl,
+                style: const TextStyle(fontSize: 16),
+                decoration: InputDecoration(
+                  labelText: 'Duration (Days)',
+                  hintText: 'e.g. 5 days, 1 month',
+                  prefixIcon:
+                      const Icon(Icons.calendar_today_rounded, size: 20),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
                 controller: timeCtrl,
                 style: const TextStyle(fontSize: 16),
                 decoration: InputDecoration(
@@ -243,27 +260,39 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
             ],
           ),
         ),
-        actionsPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.icon(
-            onPressed: () {
-              Navigator.pop(ctx, {
-                'medicine_name': nameCtrl.text.trim(),
-                'dosage': dosageCtrl.text.trim(),
-                'frequency': frequencyCtrl.text.trim(),
-                'time_of_day': timeCtrl.text.trim(),
-              });
-            },
-            icon: const Icon(Icons.check_rounded, size: 18),
-            label: const Text('Save'),
-            style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFF2563EB),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () {
+                    med['medicine_name'] = nameCtrl.text;
+                    med['dosage'] = dosageCtrl.text;
+                    med['frequency'] = frequencyCtrl.text;
+                    med['duration_days'] = durationCtrl.text;
+                    med['time_of_day'] = timeCtrl.text;
+                    Navigator.pop(ctx, med);
+                  },
+                  icon: const Icon(Icons.check_rounded, size: 20),
+                  label: const Text('Save'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF2563EB),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -287,18 +316,34 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
             style: TextStyle(fontWeight: FontWeight.w700)),
         content: Text('Remove "$name" from the list?',
             style: const TextStyle(fontSize: 15)),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              setState(() => _parsedMedicines.removeAt(index));
-            },
-            style: FilledButton.styleFrom(backgroundColor: CareSoulTheme.error),
-            child: const Text('Remove'),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() => _parsedMedicines.removeAt(index));
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: CareSoulTheme.error,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  child: const Text('Remove'),
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -324,6 +369,8 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
         'food_instruction': 'Anytime',
         'repeat_count': 2,
         'repeat_interval_minutes': 5,
+        'days_of_week': med['days_of_week'] ?? 'everyday',
+        'duration_days': med['duration_days'] ?? '',
       });
       debugPrint('Save success: $success');
       if (!success) allSuccess = false;
@@ -366,7 +413,8 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
                 FilledButton(
                   onPressed: () {
                     Navigator.pop(ctx);
-                    Navigator.pop(context);
+                    // Pop the OCR screen with 'true' to signal reminders were added
+                    Navigator.pop(context, true);
                   },
                   style: FilledButton.styleFrom(
                       backgroundColor: CareSoulTheme.success,
@@ -578,6 +626,23 @@ class _PrescriptionOcrScreenState extends State<PrescriptionOcrScreen> {
                                           ),
                                         ],
                                       ),
+                                      if ((med['duration_days'] ?? '').isNotEmpty) ...[
+                                        const SizedBox(height: 2),
+                                        Row(
+                                          children: [
+                                            Icon(Icons.calendar_today_rounded,
+                                                size: 14,
+                                                color: Colors.grey[500]),
+                                            const SizedBox(width: 4),
+                                            Text(
+                                              med['duration_days'] ?? '',
+                                              style: TextStyle(
+                                                  fontSize: 14,
+                                                  color: Colors.grey[700]),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
                                     ],
                                   ),
                                 ),

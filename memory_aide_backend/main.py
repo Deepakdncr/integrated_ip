@@ -25,6 +25,7 @@ from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
 from fastapi import BackgroundTasks
 from dotenv import load_dotenv
 from gtts import gTTS
+from moviepy import AudioFileClip
 
 load_dotenv()
 
@@ -66,7 +67,7 @@ for folder in ["photos", "voices", "music", "prescriptions"]:
     os.makedirs(os.path.join(UPLOAD_DIR, folder), exist_ok=True)
 
 # Serve uploaded files statically
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+# Serve uploaded files statically (MOVED TO BOTTOM)
 
 
 # ============================================================
@@ -156,7 +157,8 @@ class ReminderCreate(BaseModel):
     repeat_interval_minutes: int = 5
     food_instruction: str = "Anytime"
     voice_profile_id: Optional[str] = None
-
+    days_of_week: str = "everyday"  # e.g. "everyday" or "Mon,Tue,Wed"
+    duration_days: str = ""
 
 class ReminderUpdate(BaseModel):
     medicine_name: Optional[str] = None
@@ -168,6 +170,8 @@ class ReminderUpdate(BaseModel):
     repeat_interval_minutes: Optional[int] = None
     food_instruction: Optional[str] = None
     voice_profile_id: Optional[str] = None
+    days_of_week: Optional[str] = None
+    duration_days: Optional[str] = None
 
 
 class HabitCreate(BaseModel):
@@ -175,6 +179,7 @@ class HabitCreate(BaseModel):
     title: str
     scheduled_time: str
     duration_minutes: int = 0
+    days_of_week: str = "everyday"
 
 
 class HabitUpdate(BaseModel):
@@ -182,18 +187,21 @@ class HabitUpdate(BaseModel):
     scheduled_time: Optional[str] = None
     duration_minutes: Optional[int] = None
     is_active: Optional[bool] = None
+    days_of_week: Optional[str] = None
 
 
 class MusicScheduleCreate(BaseModel):
     patient_id: str
     title: str
     scheduled_time: str
+    days_of_week: str = "everyday"
 
 
 class MusicScheduleUpdate(BaseModel):
     title: Optional[str] = None
     scheduled_time: Optional[str] = None
     is_active: Optional[bool] = None
+    days_of_week: Optional[str] = None
 
 
 class SettingsUpdate(BaseModel):
@@ -248,9 +256,13 @@ def create_tables():
             repeat_interval_minutes INTEGER DEFAULT 5,
             food_instruction TEXT DEFAULT 'Anytime',
             voice_profile_id TEXT,
+            days_of_week TEXT DEFAULT 'everyday',
+            duration_days TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS days_of_week TEXT DEFAULT 'everyday'")
+    cur.execute("ALTER TABLE reminders ADD COLUMN IF NOT EXISTS duration_days TEXT DEFAULT ''")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS habit_routines (
@@ -261,9 +273,11 @@ def create_tables():
             scheduled_time TEXT NOT NULL,
             duration_minutes INTEGER DEFAULT 0,
             is_active BOOLEAN DEFAULT TRUE,
+            days_of_week TEXT DEFAULT 'everyday',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute("ALTER TABLE habit_routines ADD COLUMN IF NOT EXISTS days_of_week TEXT DEFAULT 'everyday'")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS voice_profiles (
@@ -274,12 +288,14 @@ def create_tables():
             file_url TEXT NOT NULL,
             scheduled_time TEXT,
             is_active BOOLEAN DEFAULT TRUE,
+            days_of_week TEXT DEFAULT 'everyday',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     cur.execute("ALTER TABLE voice_profiles ADD COLUMN IF NOT EXISTS scheduled_time TEXT")
     cur.execute("ALTER TABLE voice_profiles ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE")
     cur.execute("ALTER TABLE voice_profiles ADD COLUMN IF NOT EXISTS patient_id TEXT")
+    cur.execute("ALTER TABLE voice_profiles ADD COLUMN IF NOT EXISTS days_of_week TEXT DEFAULT 'everyday'")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS music_schedules (
@@ -290,9 +306,11 @@ def create_tables():
             file_url TEXT NOT NULL,
             scheduled_time TEXT NOT NULL,
             is_active BOOLEAN DEFAULT TRUE,
+            days_of_week TEXT DEFAULT 'everyday',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute("ALTER TABLE music_schedules ADD COLUMN IF NOT EXISTS days_of_week TEXT DEFAULT 'everyday'")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS device_status (
@@ -304,6 +322,7 @@ def create_tables():
             last_sync TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cur.execute("ALTER TABLE device_status ADD COLUMN IF NOT EXISTS sos_active BOOLEAN DEFAULT FALSE")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS otps (
@@ -548,14 +567,22 @@ def login(auth: AuthRequest):
 # ============================================================
 
 @app.get("/patient/{user_id}")
-def get_patient(user_id: str, auth: dict = Depends(verify_token)):
+def get_patient(user_id: str):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
         cur.execute("SELECT * FROM patient_profiles WHERE user_id=%s LIMIT 1", (user_id,))
         patient = cur.fetchone()
         if not patient:
-            raise HTTPException(status_code=404, detail="Patient not found")
+            # Optionally create a default profile for 'test_user' if missing
+            if user_id == 'test_user':
+                cur.execute("INSERT INTO patient_profiles (id, user_id, name) VALUES (%s, %s, %s)",
+                             (str(uuid.uuid4()), 'test_user', 'CareSoul Patient'))
+                conn.commit()
+                cur.execute("SELECT * FROM patient_profiles WHERE user_id=%s LIMIT 1", (user_id,))
+                patient = cur.fetchone()
+            else:
+                raise HTTPException(status_code=404, detail="Patient not found")
         return dict(patient)
     finally:
         cur.close()
@@ -563,7 +590,7 @@ def get_patient(user_id: str, auth: dict = Depends(verify_token)):
 
 
 @app.put("/patient/{user_id}")
-def update_patient(user_id: str, update: PatientProfileUpdate, auth: dict = Depends(verify_token)):
+def update_patient(user_id: str, update: PatientProfileUpdate):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -581,8 +608,10 @@ def update_patient(user_id: str, update: PatientProfileUpdate, auth: dict = Depe
             raise HTTPException(status_code=400, detail="No fields to update")
 
         fields.append("updated_at=CURRENT_TIMESTAMP")
-        values.append(user_id)
-        cur.execute(f"UPDATE patient_profiles SET {', '.join(fields)} WHERE user_id=%s", values)
+        values.append(user_id) # for where clause
+        
+        sql = f"UPDATE patient_profiles SET {', '.join(fields)} WHERE user_id=%s"
+        cur.execute(sql, values)
         conn.commit()
         return {"message": "Patient updated"}
     finally:
@@ -591,7 +620,7 @@ def update_patient(user_id: str, update: PatientProfileUpdate, auth: dict = Depe
 
 
 @app.post("/patient/{user_id}/photo")
-async def upload_patient_photo(user_id: str, file: UploadFile = File(...), auth: dict = Depends(verify_token)):
+async def upload_patient_photo(user_id: str, file: UploadFile = File(...)):
     ext = file.filename.split(".")[-1] if file.filename else "jpg"
     filename = f"{user_id}.{ext}"
     filepath = os.path.join(UPLOAD_DIR, "photos", filename)
@@ -615,7 +644,7 @@ async def upload_patient_photo(user_id: str, file: UploadFile = File(...), auth:
 # ============================================================
 
 @app.post("/ocr/prescription")
-async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(verify_token)):
+async def ocr_prescription(file: UploadFile = File(...)):
     """
     Accepts prescription image, performs OCR via OpenRouter, returns structured medicine data.
     """
@@ -644,10 +673,15 @@ async def ocr_prescription(file: UploadFile = File(...), auth: dict = Depends(ve
 
     prompt = '''You are an expert medical assistant reading a prescription image.
 Extract ALL the medicines listed in the image.
-For each medicine, determine the medicine_name, dosage, frequency, and an estimated time_of_day (e.g., "08:00").
+For each medicine, determine the medicine_name, dosage, frequency, time_of_day (e.g., "08:00"), days_of_week, and duration_days.
 
-If the image contains handwritten text, try your best to read it.
-If the image is a valid prescription but text is hard to read, still attempt to extract what you can.
+For days_of_week:
+- If the prescription says "everyday" or "daily" or no specific days are mentioned, use "everyday".
+- If specific days are mentioned (e.g., Monday, Wednesday, Friday), use short abbreviations comma-separated: "Mon,Wed,Fri".
+
+For duration_days:
+- Look for how many days or weeks the medicine is prescribed for (e.g. "8 days", "1 week").
+- If unspecified, leave as empty string "".
 
 Return ONLY valid JSON with this exact structure, with no markdown formatting or backticks:
 {
@@ -656,7 +690,9 @@ Return ONLY valid JSON with this exact structure, with no markdown formatting or
       "medicine_name": "Name",
       "dosage": "1 pill",
       "frequency": "Daily",
-      "time_of_day": "08:00"
+      "time_of_day": "08:00",
+      "days_of_week": "everyday",
+      "duration_days": "8 days"
     }
   ]
 }
@@ -804,12 +840,13 @@ def create_reminder(reminder: ReminderCreate):
         cur.execute(
             """INSERT INTO reminders
             (id, user_id, patient_id, medicine_name, dosage, frequency, time_of_day,
-             repeat_count, repeat_interval_minutes, food_instruction, voice_profile_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+             repeat_count, repeat_interval_minutes, food_instruction, voice_profile_id, days_of_week, duration_days)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (rid, reminder.patient_id, reminder.patient_id, reminder.medicine_name,
              reminder.dosage, reminder.frequency, reminder.time_of_day,
              reminder.repeat_count, reminder.repeat_interval_minutes,
-             reminder.food_instruction, reminder.voice_profile_id),
+             reminder.food_instruction, reminder.voice_profile_id,
+             reminder.days_of_week or "everyday", reminder.duration_days or ""),
         )
         conn.commit()
         return {"message": "Reminder created", "id": rid}
@@ -819,13 +856,14 @@ def create_reminder(reminder: ReminderCreate):
 
 
 @app.put("/reminders/{reminder_id}")
-def update_reminder(reminder_id: str, update: ReminderUpdate, auth: dict = Depends(verify_token)):
+def update_reminder(reminder_id: str, update: ReminderUpdate):
     conn = get_connection()
     cur = conn.cursor()
     try:
         fields, values = [], []
         for field_name in ["medicine_name", "dosage", "frequency", "time_of_day",
-                           "is_active", "repeat_count", "repeat_interval_minutes", "food_instruction", "voice_profile_id"]:
+                           "is_active", "repeat_count", "repeat_interval_minutes",
+                           "food_instruction", "voice_profile_id", "days_of_week"]:
             val = getattr(update, field_name)
             if val is not None:
                 fields.append(f"{field_name}=%s")
@@ -842,7 +880,7 @@ def update_reminder(reminder_id: str, update: ReminderUpdate, auth: dict = Depen
 
 
 @app.delete("/reminders/{reminder_id}")
-def delete_reminder(reminder_id: str, auth: dict = Depends(verify_token)):
+def delete_reminder(reminder_id: str):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -856,12 +894,25 @@ def delete_reminder(reminder_id: str, auth: dict = Depends(verify_token)):
         conn.close()
 
 
+@app.delete("/reminders/all/{user_id}")
+def delete_all_reminders(user_id: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM reminders WHERE user_id=%s", (user_id,))
+        conn.commit()
+        return {"message": f"All reminders deleted for user {user_id}"}
+    finally:
+        cur.close()
+        conn.close()
+
+
 # ============================================================
 # HABIT ROUTINE ROUTES
 # ============================================================
 
 @app.get("/habits/{user_id}")
-def get_habits(user_id: str, auth: dict = Depends(verify_token)):
+def get_habits(user_id: str):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -876,17 +927,18 @@ def get_habits(user_id: str, auth: dict = Depends(verify_token)):
 
 
 @app.post("/habits")
-def create_habit(habit: HabitCreate, auth: dict = Depends(verify_token)):
+def create_habit(habit: HabitCreate):
     conn = get_connection()
     cur = conn.cursor()
     try:
         hid = str(uuid.uuid4())
         cur.execute(
             """INSERT INTO habit_routines
-            (id, user_id, patient_id, title, scheduled_time, duration_minutes)
-            VALUES (%s, %s, %s, %s, %s, %s)""",
-            (hid, auth["user_id"], habit.patient_id, habit.title,
-             habit.scheduled_time, habit.duration_minutes),
+            (id, user_id, patient_id, title, scheduled_time, duration_minutes, days_of_week)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (hid, habit.patient_id, habit.patient_id, habit.title,
+             habit.scheduled_time, habit.duration_minutes,
+             habit.days_of_week or "everyday"),
         )
         conn.commit()
         return {"message": "Habit created", "id": hid}
@@ -896,12 +948,12 @@ def create_habit(habit: HabitCreate, auth: dict = Depends(verify_token)):
 
 
 @app.put("/habits/{habit_id}")
-def update_habit(habit_id: str, update: HabitUpdate, auth: dict = Depends(verify_token)):
+def update_habit(habit_id: str, update: HabitUpdate):
     conn = get_connection()
     cur = conn.cursor()
     try:
         fields, values = [], []
-        for field_name in ["title", "scheduled_time", "duration_minutes", "is_active"]:
+        for field_name in ["title", "scheduled_time", "duration_minutes", "is_active", "days_of_week"]:
             val = getattr(update, field_name)
             if val is not None:
                 fields.append(f"{field_name}=%s")
@@ -918,7 +970,7 @@ def update_habit(habit_id: str, update: HabitUpdate, auth: dict = Depends(verify
 
 
 @app.delete("/habits/{habit_id}")
-def delete_habit(habit_id: str, auth: dict = Depends(verify_token)):
+def delete_habit(habit_id: str):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -937,7 +989,7 @@ def delete_habit(habit_id: str, auth: dict = Depends(verify_token)):
 # ============================================================
 
 @app.get("/voices/{user_id}")
-def get_voices(user_id: str, auth: dict = Depends(verify_token)):
+def get_voices(user_id: str):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -951,26 +1003,54 @@ def get_voices(user_id: str, auth: dict = Depends(verify_token)):
 @app.post("/voices/upload")
 async def upload_voice(
     name: str = Form("Voice Recording"),
-    patient_id: str = Form(""),
+    patient_id: str = Form("test_user"),
     scheduled_time: str = Form("08:00"),
-    file: UploadFile = File(...), 
-    auth: dict = Depends(verify_token)
+    days_of_week: str = Form("everyday"),
+    file: UploadFile = File(...),
 ):
     ext = file.filename.split(".")[-1] if file.filename else "wav"
-    filename = f"{uuid.uuid4()}.{ext}"
-    filepath = os.path.join(UPLOAD_DIR, "voices", filename)
-    with open(filepath, "wb") as f:
+    # Save original temp file
+    temp_filename = f"temp_{uuid.uuid4()}.{ext}"
+    temp_path = os.path.join(UPLOAD_DIR, "voices", temp_filename)
+    with open(temp_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    file_url = f"/uploads/voices/{filename}"
+    # Transcode to Strict IoT-Compatible WAV (Mono, 16kHz, 16-bit PCM)
+    # WAV is the most stable format for ESP32-audioI2S as it requires no sync-word hunting
+    final_filename = f"{uuid.uuid4()}.wav"
+    final_path = os.path.join(UPLOAD_DIR, "voices", final_filename)
+    
+    audio_clip = None
+    try:
+        audio_clip = AudioFileClip(temp_path)
+        # Using 16000Hz Mono for perfect balance of quality and I2S stability
+        audio_clip.write_audiofile(final_path, fps=16000, nbytes=2, codec='pcm_s16le')
+        audio_clip.close()
+        audio_clip = None
+        import time; time.sleep(0.5)  # Let Windows release file handles
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    except Exception as e:
+        print(f"[Audio] Transcode failed: {e}")
+        if audio_clip is not None:
+            try: audio_clip.close()
+            except: pass
+            import time; time.sleep(0.5)
+        if os.path.exists(temp_path):
+            shutil.copy2(temp_path, final_path)
+            try: os.remove(temp_path)
+            except: pass
+
+    user_id = patient_id if patient_id else "test_user"
+    file_url = f"/uploads/voices/{final_filename}"
     conn = get_connection()
     cur = conn.cursor()
     try:
         vid = str(uuid.uuid4())
         cur.execute(
-            """INSERT INTO voice_profiles (id, user_id, patient_id, name, file_url, scheduled_time) 
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (vid, auth["user_id"], patient_id, name, file_url, scheduled_time),
+            """INSERT INTO voice_profiles (id, user_id, patient_id, name, file_url, scheduled_time, days_of_week) 
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (vid, user_id, user_id, name, file_url, scheduled_time, days_of_week or "everyday"),
         )
         conn.commit()
         return {"message": "Voice uploaded", "id": vid, "file_url": file_url}
@@ -979,7 +1059,7 @@ async def upload_voice(
         conn.close()
 
 @app.put("/voices/{voice_id}")
-def update_voice(voice_id: str, update: dict, auth: dict = Depends(verify_token)):
+def update_voice(voice_id: str, update: dict):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -994,7 +1074,7 @@ def update_voice(voice_id: str, update: dict, auth: dict = Depends(verify_token)
 
 
 @app.delete("/voices/{voice_id}")
-def delete_voice(voice_id: str, auth: dict = Depends(verify_token)):
+def delete_voice(voice_id: str):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -1013,7 +1093,7 @@ def delete_voice(voice_id: str, auth: dict = Depends(verify_token)):
 # ============================================================
 
 @app.get("/music/{user_id}")
-def get_music(user_id: str, auth: dict = Depends(verify_token)):
+def get_music(user_id: str):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -1026,27 +1106,75 @@ def get_music(user_id: str, auth: dict = Depends(verify_token)):
 
 @app.post("/music/upload")
 async def upload_music(
-    patient_id: str = Form(""),
+    patient_id: str = Form("test_user"),
     title: str = Form("Music"),
     scheduled_time: str = Form("08:00"),
+    days_of_week: str = Form("everyday"),
     file: UploadFile = File(...),
-    auth: dict = Depends(verify_token),
 ):
     ext = file.filename.split(".")[-1] if file.filename else "mp3"
-    filename = f"{uuid.uuid4()}.{ext}"
-    filepath = os.path.join(UPLOAD_DIR, "music", filename)
-    with open(filepath, "wb") as f:
+    temp_filename = f"temp_{uuid.uuid4()}.{ext}"
+    temp_path = os.path.join(UPLOAD_DIR, "music", temp_filename)
+
+    # Save the uploaded file first
+    with open(temp_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    file_url = f"/uploads/music/{filename}"
+    # Transcode to ESP32-compatible MP3: 128kbps, MONO, 44.1kHz
+    # Using ffmpeg directly for reliable mono conversion
+    final_filename = f"{uuid.uuid4()}.mp3"
+    final_path = os.path.join(UPLOAD_DIR, "music", final_filename)
+
+    try:
+        import subprocess
+        # Get ffmpeg path from moviepy's bundled copy (not in Windows PATH)
+        try:
+            import imageio_ffmpeg
+            ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        except ImportError:
+            ffmpeg_path = 'ffmpeg'  # Fallback to system PATH
+        
+        print(f"[Music] Using ffmpeg: {ffmpeg_path}")
+        result = subprocess.run([
+            ffmpeg_path, '-y', '-i', temp_path,
+            '-map_metadata', '-1',   # Strip absolutely all metadata
+            '-ac', '1',              # Force MONO (halves processing)
+            '-ar', '24000',          # 24kHz sample rate (reduces CPU & I2S load)
+            '-b:a', '64k',           # 64kbps Constant Bit Rate (CBR)
+            '-minrate', '64k',       # Force strict CBR
+            '-maxrate', '64k',       # Force strict CBR
+            '-codec:a', 'libmp3lame',
+            '-write_xing', '0',      # CRITICAL: Disable Xing/Info header which breaks ESP32 decoders
+            '-id3v2_version', '0',   # No ID3 tags
+            final_path
+        ], capture_output=True, text=True, timeout=120)
+        
+        if result.returncode == 0 and os.path.exists(final_path):
+            file_size = os.path.getsize(final_path)
+            os.remove(temp_path)
+            print(f"[Music] Transcoded to strict 64kbps MONO MP3: {final_filename} ({file_size} bytes)")
+        else:
+            print(f"[Music] ffmpeg error (code {result.returncode}): {result.stderr[:300]}")
+            shutil.copy2(temp_path, final_path)
+            try: os.remove(temp_path)
+            except: pass
+    except Exception as e:
+        print(f"[Music] Transcode failed ({e}), using original file.")
+        if os.path.exists(temp_path):
+            shutil.copy2(temp_path, final_path)
+            try: os.remove(temp_path)
+            except: pass
+
+    user_id = patient_id if patient_id else "test_user"
+    file_url = f"/uploads/music/{final_filename}"
     conn = get_connection()
     cur = conn.cursor()
     try:
         mid = str(uuid.uuid4())
         cur.execute(
-            """INSERT INTO music_schedules (id, user_id, patient_id, title, file_url, scheduled_time)
-            VALUES (%s, %s, %s, %s, %s, %s)""",
-            (mid, auth["user_id"], patient_id, title, file_url, scheduled_time),
+            """INSERT INTO music_schedules (id, user_id, patient_id, title, file_url, scheduled_time, days_of_week)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (mid, user_id, user_id, title, file_url, scheduled_time, days_of_week or "everyday"),
         )
         conn.commit()
         return {"message": "Music uploaded", "id": mid, "file_url": file_url}
@@ -1055,13 +1183,36 @@ async def upload_music(
         conn.close()
 
 
+@app.get("/uploads/music/{filename}")
+def serve_music_file(filename: str):
+    """Explicitly serve music files to ESP32 to ensure stable streaming."""
+    filepath = os.path.join(UPLOAD_DIR, "music", filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Music file not found")
+    # FileResponse handles range headers and large files efficiently
+    return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
+
+
+@app.get("/uploads/voices/{filename}")
+def serve_voice_file(filename: str):
+    """Explicitly serve voice recording files with correct MIME type."""
+    filepath = os.path.join(UPLOAD_DIR, "voices", filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="Voice file not found")
+    # Detect MIME type based on extension
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'wav'
+    mime_map = {'wav': 'audio/wav', 'mp3': 'audio/mpeg', 'ogg': 'audio/ogg', 'm4a': 'audio/mp4'}
+    media_type = mime_map.get(ext, 'audio/wav')
+    return FileResponse(filepath, media_type=media_type, filename=filename)
+
+
 @app.put("/music/{music_id}")
-def update_music(music_id: str, update: MusicScheduleUpdate, auth: dict = Depends(verify_token)):
+def update_music(music_id: str, update: MusicScheduleUpdate):
     conn = get_connection()
     cur = conn.cursor()
     try:
         fields, values = [], []
-        for field_name in ["title", "scheduled_time", "is_active"]:
+        for field_name in ["title", "scheduled_time", "is_active", "days_of_week"]:
             val = getattr(update, field_name)
             if val is not None:
                 fields.append(f"{field_name}=%s")
@@ -1078,7 +1229,7 @@ def update_music(music_id: str, update: MusicScheduleUpdate, auth: dict = Depend
 
 
 @app.delete("/music/{music_id}")
-def delete_music(music_id: str, auth: dict = Depends(verify_token)):
+def delete_music(music_id: str):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -1111,7 +1262,7 @@ def get_device_tts(text: str):
 
 
 @app.get("/device/{user_id}")
-def get_device_status(user_id: str, auth: dict = Depends(verify_token)):
+def get_device_status(user_id: str):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -1126,7 +1277,7 @@ def get_device_status(user_id: str, auth: dict = Depends(verify_token)):
 
 
 @app.post("/device/sync/{user_id}")
-def sync_device(user_id: str, auth: dict = Depends(verify_token)):
+def sync_device(user_id: str):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -1141,13 +1292,27 @@ def sync_device(user_id: str, auth: dict = Depends(verify_token)):
         conn.close()
 
 
+# Day-of-week helper
+DAY_ABBREVS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+def _is_active_today(days_of_week: str) -> bool:
+    """Return True if the reminder should fire today based on days_of_week."""
+    if not days_of_week or days_of_week.strip().lower() == "everyday":
+        return True
+    today_abbrev = DAY_ABBREVS[datetime.now().weekday()]  # Mon=0 … Sun=6
+    allowed = [d.strip() for d in days_of_week.split(",")]
+    return today_abbrev in allowed
+
+
 # IoT Device Polling Endpoint
 @app.get("/device/pending/{device_id}")
 def get_pending_actions(device_id: str):
     """
-    Called by ESP32 device to get all active reminders.
+    Called by ESP32 device to get all active scheduled actions.
     No auth required (device uses device_id).
-    Returns simple JSON for ArduinoJson parsing.
+    Returns unified JSON for ArduinoJson parsing with priority:
+      1=medicine(highest), 2=voice, 3=habit, 4=music(lowest)
+    Only returns reminders that are scheduled for today's day-of-week.
     """
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1159,20 +1324,99 @@ def get_pending_actions(device_id: str):
             return {"actions": []}
 
         user_id = device["user_id"]
+        actions = []
+        base_url = os.getenv("BASE_URL", f"http://{os.getenv('SERVER_IP','localhost')}:8000")
 
-        # Get ALL active reminders so ESP32 can save them locally for offline RTC logic
+        # 1. Medicine reminders (priority 1 – highest)
         cur.execute(
-            "SELECT medicine_name, dosage, time_of_day FROM reminders "
-            "WHERE user_id=%s AND is_active=TRUE",
+            "SELECT medicine_name, dosage, time_of_day, days_of_week FROM reminders "
+            "WHERE user_id=%s AND is_active=TRUE ORDER BY time_of_day ASC",
             (user_id,),
         )
-        actions = []
         for r in cur.fetchall():
+            if not _is_active_today(r.get("days_of_week", "everyday")):
+                continue
             actions.append({
+                "type": "medicine",
+                "priority": 1,
+                "time": r["time_of_day"],
+                "data": {
+                    "medicine_name": r["medicine_name"],
+                    "dosage": r["dosage"],
+                },
+                # Legacy fields for backward-compat with older firmware
                 "medicine_name": r["medicine_name"],
                 "dosage": r["dosage"],
                 "time_of_day": r["time_of_day"],
             })
+
+        # 2. Voice recordings (priority 2)
+        cur.execute(
+            "SELECT id, name, file_url, scheduled_time, days_of_week FROM voice_profiles "
+            "WHERE user_id=%s AND is_active=TRUE AND scheduled_time IS NOT NULL ORDER BY scheduled_time ASC",
+            (user_id,),
+        )
+        for v in cur.fetchall():
+            if not v["scheduled_time"]:
+                continue
+            if not _is_active_today(v.get("days_of_week", "everyday")):
+                continue
+            actions.append({
+                "type": "voice",
+                "priority": 2,
+                "time": v["scheduled_time"],
+                "data": {
+                    "name": v["name"],
+                    "audio_url": f"{base_url}{v['file_url']}",
+                },
+                # Legacy
+                "time_of_day": v["scheduled_time"],
+            })
+
+        # 3. Habit routines (priority 3)
+        cur.execute(
+            "SELECT title, scheduled_time, days_of_week FROM habit_routines "
+            "WHERE user_id=%s AND is_active=TRUE ORDER BY scheduled_time ASC",
+            (user_id,),
+        )
+        for h in cur.fetchall():
+            if not _is_active_today(h.get("days_of_week", "everyday")):
+                continue
+            actions.append({
+                "type": "habit",
+                "priority": 3,
+                "time": h["scheduled_time"],
+                "data": {
+                    "title": h["title"],
+                    "message": f"Time for {h['title']}",
+                },
+                # Legacy
+                "time_of_day": h["scheduled_time"],
+            })
+
+        # 4. Music schedules (priority 4 – lowest)
+        cur.execute(
+            "SELECT title, file_url, scheduled_time, days_of_week FROM music_schedules "
+            "WHERE user_id=%s AND is_active=TRUE ORDER BY scheduled_time ASC",
+            (user_id,),
+        )
+        for m in cur.fetchall():
+            if not _is_active_today(m.get("days_of_week", "everyday")):
+                continue
+            actions.append({
+                "type": "music",
+                "priority": 4,
+                "time": m["scheduled_time"],
+                "data": {
+                    "title": m["title"],
+                    "audio_url": f"{base_url}{m['file_url']}",
+                },
+                # Legacy
+                "time_of_day": m["scheduled_time"],
+            })
+
+        # Sort by time, then priority (so same-time conflicts go highest-priority first)
+        actions.sort(key=lambda a: (a["time"], a["priority"]))
 
         # Update last sync
         cur.execute(
@@ -1181,7 +1425,69 @@ def get_pending_actions(device_id: str):
         )
         conn.commit()
 
-        return {"actions": actions}
+        # Get user settings
+        cur.execute("SELECT volume, language FROM users WHERE id=%s", (user_id,))
+        settings = cur.fetchone()
+        
+        print(f"[Device] Returning {len(actions)} actions for device {device_id} (user: {user_id})")
+        return {
+            "actions": actions,
+            "settings": {
+                "volume": settings["volume"] if settings else "medium",
+                "language": settings["language"] if settings else "en"
+            }
+        }
+    finally:
+        cur.close()
+        conn.close()
+
+# ============================================================
+# SOS ROUTES
+# ============================================================
+
+class SOSTriggerPayload(BaseModel):
+    device_id: str
+
+@app.post("/sos/trigger")
+def trigger_sos(payload: SOSTriggerPayload):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE device_status SET sos_active=TRUE, last_sync=CURRENT_TIMESTAMP, is_online=TRUE WHERE device_id=%s",
+            (payload.device_id,)
+        )
+        conn.commit()
+        return {"message": "SOS triggered"}
+    finally:
+        cur.close()
+        conn.close()
+
+@app.delete("/sos/stop/{device_id}")
+def stop_sos(device_id: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "UPDATE device_status SET sos_active=FALSE WHERE device_id=%s",
+            (device_id,)
+        )
+        conn.commit()
+        return {"message": "SOS stopped"}
+    finally:
+        cur.close()
+        conn.close()
+
+@app.get("/sos/status/{device_id}")
+def get_sos_status(device_id: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT sos_active FROM device_status WHERE device_id=%s LIMIT 1", (device_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Device not found")
+        return {"active": bool(row[0])}
     finally:
         cur.close()
         conn.close()
@@ -1191,7 +1497,7 @@ def get_pending_actions(device_id: str):
 # ============================================================
 
 @app.get("/settings/{user_id}")
-def get_settings(user_id: str, auth: dict = Depends(verify_token)):
+def get_settings(user_id: str):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
@@ -1206,7 +1512,7 @@ def get_settings(user_id: str, auth: dict = Depends(verify_token)):
 
 
 @app.put("/settings/{user_id}")
-def update_settings(user_id: str, update: SettingsUpdate, auth: dict = Depends(verify_token)):
+def update_settings(user_id: str, update: SettingsUpdate):
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -1226,3 +1532,6 @@ def update_settings(user_id: str, update: SettingsUpdate, auth: dict = Depends(v
     finally:
         cur.close()
         conn.close()
+
+# Finally mount the generic uploads at the bottom
+app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
