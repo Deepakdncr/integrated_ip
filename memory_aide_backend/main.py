@@ -1063,11 +1063,19 @@ def update_voice(voice_id: str, update: dict):
     conn = get_connection()
     cur = conn.cursor()
     try:
-        if "is_active" in update:
-            cur.execute("UPDATE voice_profiles SET is_active=%s WHERE id=%s", (update["is_active"], voice_id))
-            conn.commit()
-            return {"message": "Voice updated"}
-        raise HTTPException(status_code=400, detail="Invalid request")
+        fields, values = [], []
+        for field in ["name", "scheduled_time", "is_active", "days_of_week"]:
+            if field in update:
+                fields.append(f"{field}=%s")
+                values.append(update[field])
+                
+        if not fields:
+            raise HTTPException(status_code=400, detail="No fields to update")
+            
+        values.append(voice_id)
+        cur.execute(f"UPDATE voice_profiles SET {', '.join(fields)} WHERE id=%s", values)
+        conn.commit()
+        return {"message": "Voice updated"}
     finally:
         cur.close()
         conn.close()
@@ -1138,16 +1146,16 @@ async def upload_music(
         result = subprocess.run([
             ffmpeg_path, '-y', '-i', temp_path,
             '-map_metadata', '-1',   # Strip absolutely all metadata
-            '-ac', '1',              # Force MONO (halves processing)
-            '-ar', '24000',          # 24kHz sample rate (reduces CPU & I2S load)
-            '-b:a', '64k',           # 64kbps Constant Bit Rate (CBR)
-            '-minrate', '64k',       # Force strict CBR
-            '-maxrate', '64k',       # Force strict CBR
+            '-ac', '1',              # MONO (Crucial for non-PSRAM devices)
+            '-ar', '32000',          # 32kHz (Better balance for SD card speed)
+            '-b:a', '128k',          # 128kbps High Quality CBR
+            '-minrate', '128k',      # Force CBR
+            '-maxrate', '128k',      # Force CBR
             '-codec:a', 'libmp3lame',
             '-write_xing', '0',      # CRITICAL: Disable Xing/Info header which breaks ESP32 decoders
             '-id3v2_version', '0',   # No ID3 tags
             final_path
-        ], capture_output=True, text=True, timeout=120)
+        ], capture_output=True, text=True, timeout=300)
         
         if result.returncode == 0 and os.path.exists(final_path):
             file_size = os.path.getsize(final_path)

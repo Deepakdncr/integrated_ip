@@ -73,6 +73,7 @@ const unsigned long POLL_INTERVAL_MS = 30000;
 // SOS Emergency System
 #define SOS_BUTTON_PIN  33   // Push button (internal pull-up, press = LOW)
 #define BUZZER_PIN      32   // Active buzzer
+#define SOS_LED_PIN     4    // Red LED for visual indication
 // ──────────────────────────────────────────────
 
 Audio audio;
@@ -82,13 +83,47 @@ Preferences preferences;
 bool sdCardReady = false;
 
 // SOS state
-bool sosActive = false;
+volatile bool sosActive = false;
+volatile bool pendingSOSStartNotify = false;
+volatile bool pendingSOSStopNotify = false;
 unsigned long lastButtonPress = 0;
 const unsigned long DEBOUNCE_MS = 300;
 
 unsigned long lastPollTime = 0;
 int lastCheckedMinute = -1;
 int lastCheckedHour   = -1;
+
+// Forward declarations
+void notifySOS(bool triggered);
+bool checkSOSRemoteStop();
+
+void sosNetworkTask(void * pvParameters) {
+  unsigned long lastRemoteStopCheck = 0;
+  for(;;) {
+    if (pendingSOSStartNotify) {
+      pendingSOSStartNotify = false;
+      notifySOS(true);
+    }
+    if (pendingSOSStopNotify) {
+      pendingSOSStopNotify = false;
+      notifySOS(false);
+    }
+    
+    // Remote stop checking 
+    if (sosActive && WiFi.status() == WL_CONNECTED) {
+      if (millis() - lastRemoteStopCheck > 5000) {
+        lastRemoteStopCheck = millis();
+        if (checkSOSRemoteStop()) {
+          sosActive = false;
+          digitalWrite(BUZZER_PIN, LOW);
+          digitalWrite(SOS_LED_PIN, LOW);
+          Serial.println("[SOS] ** STOPPED remotely from app **");
+        }
+      }
+    }
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
+}
 
 // ──────────────────────────────────────────────
 // SETUP
@@ -102,8 +137,10 @@ void setup() {
   // Init SOS hardware
   pinMode(SOS_BUTTON_PIN, INPUT_PULLUP);
   pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(SOS_LED_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
-  Serial.println("[SOS] Button=GPIO33, Buzzer=GPIO32 – ready.");
+  digitalWrite(SOS_LED_PIN, LOW);
+  Serial.println("[SOS] Button=GPIO33, Buzzer=GPIO32, LED=GPIO4 – ready.");
 
   // Init RTC
   if (!rtc.begin()) {
@@ -126,10 +163,10 @@ void setup() {
   delay(200);  // Let SD card power up
 
   sdCardReady = false;
-  Serial.println("[SD] Pins: MOSI=23, MISO=19, SCK=18, CS=5");
+  // 16MHz was too fast for the physical wiring, dropping back to default (4MHz)
   for (int attempt = 1; attempt <= 3; attempt++) {
     Serial.printf("[SD] Init attempt %d of 3...\n", attempt);
-    if (SD.begin(SD_CS)) {  // Uses default VSPI bus
+    if (SD.begin(SD_CS)) {
       sdCardReady = true;
       break;
     }
@@ -172,8 +209,8 @@ void setup() {
 
   // Init I2S audio
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  // Allocate a large 30KB buffer in the ESP32's internal RAM to prevent popping
-  audio.setBufsize(30000, 0);
+  // Increase internal buffer to 40KB for smoother playback 
+  audio.setBufsize(40000, 0);
   int savedVol = preferences.getInt("volume", 18);
   audio.setVolume(savedVol); // Dynamic volume (0-25)
 
@@ -196,6 +233,11 @@ void setup() {
   } else {
     Serial.println("\n[WiFi] Offline – using cached schedule.");
   }
+
+  // Start SOS network task on Core 0 (background) so main loop never blocks
+  xTaskCreatePinnedToCore(
+    sosNetworkTask, "SOS_Net_Task", 8192, NULL, 1, NULL, 0
+  );
 }
 
 // ──────────────────────────────────────────────
@@ -256,16 +298,24 @@ void loop() {
   // ── SOS Button Check ──
   checkSOSButton();
 
-  // ── SOS Buzzer Pattern (runs continuously while active) ──
+  // ── SOS Buzzer Pattern (Ambulance/Fire Alarm Cadence) ──
+  static unsigned long lastBuzzerToggle = 0;
+  static bool buzzerState = false;
+  
   if (sosActive) {
-    playSOSPattern();
-    // After each SOS cycle, check if backend stopped it
-    if (WiFi.status() == WL_CONNECTED) {
-      if (checkSOSRemoteStop()) {
-        sosActive = false;
-        digitalWrite(BUZZER_PIN, LOW);
-        Serial.println("[SOS] ** STOPPED remotely from app **");
-      }
+    // Non-blocking rapid alternating tone (300ms ON / 300ms OFF)
+    if (millis() - lastBuzzerToggle > 300) {
+      lastBuzzerToggle = millis();
+      buzzerState = !buzzerState;
+      digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
+      digitalWrite(SOS_LED_PIN, buzzerState ? HIGH : LOW);
+    }
+  } else {
+    // Ensure it's cleanly off when not active
+    if (buzzerState) {
+      buzzerState = false;
+      digitalWrite(BUZZER_PIN, LOW);
+      digitalWrite(SOS_LED_PIN, LOW);
     }
   }
 }
@@ -302,7 +352,7 @@ void pollSchedule() {
 
   Serial.printf("[Sync] Received %d bytes\n", payload.length());
 
-  DynamicJsonDocument doc(8192);
+  DynamicJsonDocument doc(16384);
   DeserializationError err = deserializeJson(doc, payload);
   if (err) {
     Serial.printf("[Sync] JSON parse error: %s\n", err.c_str());
@@ -321,7 +371,7 @@ void pollSchedule() {
   if (doc.containsKey("settings")) {
     const char* volStr = doc["settings"]["volume"] | "medium";
     int volLevel = 18;
-    if (strcmp(volStr, "low") == 0)       volLevel = 12;
+    if (strcmp(volStr, "low") == 0)       volLevel = 14;
     else if (strcmp(volStr, "high") == 0) volLevel = 25;
 
     preferences.putInt("volume", volLevel);
@@ -405,7 +455,7 @@ void pollSchedule() {
 void checkAndPlaySchedule(int currentHour, int currentMinute) {
   String payload = preferences.getString("schedule", "{}");
 
-  DynamicJsonDocument doc(8192);
+  DynamicJsonDocument doc(16384);
   if (deserializeJson(doc, payload)) {
     Serial.println("[Trigger] Failed to parse cached schedule.");
     return;
@@ -532,15 +582,22 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
         bool started = false;
         while ((millis() - startWait < 5000)) {
           audio.loop();
+          checkSOSButton();
+          if (sosActive) { audio.stopSong(); return; }
           if (audio.isRunning()) { started = true; break; }
         }
-        if (!started) {
-          Serial.println("[Play] ERROR: Audio failed to start from SD.");
-        }
+        if (!started) Serial.println("[Play] ERROR: Audio failed to start.");
         while (audio.isRunning()) {
           audio.loop();
+          checkSOSButton();
+          if (sosActive) { audio.stopSong(); return; }
         }
-        if (r < repeatCount - 1) delay(2000);
+        if (r < repeatCount - 1) {
+          for (int d = 0; d < 80; d++) {
+            delay(10); checkSOSButton();
+            if (sosActive) { audio.stopSong(); return; }
+          }
+        }
       }
     } else if (WiFi.status() == WL_CONNECTED) {
       // Cache miss – stream from server
@@ -556,11 +613,20 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
           unsigned long startWait = millis();
           while (!audio.isRunning() && (millis() - startWait < 8000)) {
             audio.loop();
+            checkSOSButton();
+            if (sosActive) { audio.stopSong(); return; }
           }
           while (audio.isRunning()) {
             audio.loop();
+            checkSOSButton();
+            if (sosActive) { audio.stopSong(); return; }
           }
-          if (r == 0) delay(3000);
+          if (r == 0) {
+            for (int d = 0; d < 300; d++) {
+              delay(10); checkSOSButton();
+              if (sosActive) { audio.stopSong(); return; }
+            }
+          }
         }
       } else {
         int vol = preferences.getInt("volume", 18);
@@ -571,18 +637,25 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
         bool started = false;
         while ((millis() - startWait < 12000)) {
           audio.loop();
+          checkSOSButton();
+          if (sosActive) { audio.stopSong(); return; }
           if (audio.isRunning()) { started = true; break; }
         }
         if (!started) Serial.println("[Play] ERROR: Stream failed to start.");
         while (audio.isRunning()) {
           audio.loop();
+          checkSOSButton();
+          if (sosActive) { audio.stopSong(); return; }
         }
       }
     } else {
       Serial.printf("[Play] ERROR: Audio not cached and offline – skipping.\n");
     }
 
-    delay(1000);
+    for (int d = 0; d < 100; d++) {
+      delay(10); checkSOSButton();
+      if (sosActive) { audio.stopSong(); return; }
+    }
   }
 }
 
@@ -621,7 +694,7 @@ void downloadAudioFile(String url, String filename) {
   HTTPClient http;
   Serial.printf("[Cache] Downloading: %s\n", url.c_str());
   http.begin(url);
-  http.setTimeout(60000);  // 60s timeout for large music files
+  http.setTimeout(300000);  // 300s (5m) timeout for large music files
   int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK) {
     Serial.printf("[Cache] HTTP %d – download failed.\n", httpCode);
@@ -637,21 +710,26 @@ void downloadAudioFile(String url, String filename) {
     return;
   }
 
-  WiFiClient* stream = http.getStreamPtr();
-  uint8_t buff[4096];  // Larger buffer for SD card (faster write)
+  int totalBytes = http.getSize();
   int bytesRead = 0;
-  int len = http.getSize();
-  unsigned long start = millis();
+  uint8_t buff[1024];
 
-  while (http.connected() || stream->available()) {
-    if (len > 0 && bytesRead >= len) break;
-    if (stream->available()) {
-      int c = stream->readBytes(buff, min((int)stream->available(), (int)sizeof(buff)));
-      if (c > 0) { f.write(buff, c); bytesRead += c; }
-    } else {
+  if (totalBytes > 0) {
+    WiFiClient * stream = http.getStreamPtr();
+    while (http.connected() && (bytesRead < totalBytes || totalBytes == -1)) {
+      size_t size = stream->available();
+      if (size) {
+        int c = stream->readBytes(buff, min(size, sizeof(buff)));
+        f.write(buff, c);
+        bytesRead += c;
+        if (bytesRead % (100 * 1024) == 0) { // Every 100KB
+          Serial.printf("[Cache] Progress: %d / %d bytes\n", bytesRead, totalBytes);
+        }
+      }
       delay(1);
     }
-    if (millis() - start > 120000) break;  // 2 min max
+  } else {
+    bytesRead = http.writeToStream(&f);
   }
 
   f.close();
@@ -702,75 +780,37 @@ void syncRTCfromNTP() {
 void checkSOSButton() {
   if (digitalRead(SOS_BUTTON_PIN) == LOW && (millis() - lastButtonPress > DEBOUNCE_MS)) {
     lastButtonPress = millis();
-    delay(50);  // Extra debounce
+    delay(50);  // Quick debounce
     if (digitalRead(SOS_BUTTON_PIN) == LOW) {
       if (sosActive) {
-        // Stop SOS (button pressed again)
+        // Stop SOS instantly
         sosActive = false;
         digitalWrite(BUZZER_PIN, LOW);
+        digitalWrite(SOS_LED_PIN, LOW);
         Serial.println("[SOS] ** STOPPED by button press **");
-        notifySOS(false);  // Tell backend SOS stopped
+        pendingSOSStopNotify = true; // Tell background task to notify
       } else {
-        // Trigger SOS
+        // Trigger SOS instantly
         sosActive = true;
+        
+        // INSTANT FEEDBACK
+        digitalWrite(BUZZER_PIN, HIGH);
+        digitalWrite(SOS_LED_PIN, HIGH);
         Serial.println("[SOS] !! EMERGENCY TRIGGERED !!");
-        notifySOS(true);   // Tell backend SOS started
+        
+        pendingSOSStartNotify = true; // Tell background task to notify
       }
-      // Wait for button release
-      while (digitalRead(SOS_BUTTON_PIN) == LOW) delay(10);
+      // Wait for release
+      while (digitalRead(SOS_BUTTON_PIN) == LOW) {
+        delay(10);
+      }
+      // Reset debounce timer exactly at release
+      lastButtonPress = millis();
     }
   }
 }
 
-// A delay function that continuously checks the button so the device stays responsive
-void smartDelay(unsigned long ms) {
-  unsigned long start = millis();
-  while (millis() - start < ms) {
-    checkSOSButton();
-    if (!sosActive) return; // Exit delay immediately if SOS is cancelled
-    delay(10);
-  }
-}
-
-// Play real SOS Morse pattern: ··· --- ··· (with pauses)
-// DOT = 150ms, DASH = 450ms, gap = 150ms, letter-gap = 450ms
-void playSOSPattern() {
-  const int DOT = 150;
-  const int DASH = 450;
-  const int GAP = 150;
-  const int LETTER_GAP = 450;
-
-  // S: ··· (3 dots)
-  for (int i = 0; i < 3 && sosActive; i++) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    smartDelay(DOT);
-    digitalWrite(BUZZER_PIN, LOW);
-    smartDelay(GAP);
-  }
-  if (!sosActive) return;
-  smartDelay(LETTER_GAP);
-
-  // O: --- (3 dashes)
-  for (int i = 0; i < 3 && sosActive; i++) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    smartDelay(DASH);
-    digitalWrite(BUZZER_PIN, LOW);
-    smartDelay(GAP);
-  }
-  if (!sosActive) return;
-  smartDelay(LETTER_GAP);
-
-  // S: ··· (3 dots)
-  for (int i = 0; i < 3 && sosActive; i++) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    smartDelay(DOT);
-    digitalWrite(BUZZER_PIN, LOW);
-    smartDelay(GAP);
-  }
-
-  // Pause between SOS cycles (1.5 seconds)
-  if (sosActive) smartDelay(500);
-}
+// (smartDelay and playSOSPattern functions removed. Buzzer uses non-blocking millis() in loop())
 
 // Notify backend of SOS trigger or stop
 void notifySOS(bool triggered) {
@@ -801,7 +841,7 @@ bool checkSOSRemoteStop() {
   HTTPClient http;
   String url = String("http://") + SERVER_IP + ":" + SERVER_PORT + "/sos/status/" + DEVICE_ID;
   http.begin(url);
-  http.setTimeout(3000);
+  http.setTimeout(800);  // Very short timeout so audio doesn't stutter
   int code = http.GET();
   if (code == 200) {
     String payload = http.getString();

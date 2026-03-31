@@ -387,56 +387,91 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
           title: const Row(children: [
-            Icon(Icons.edit_rounded, color: Color(0xFF7C3AED), size: 28),
-            SizedBox(width: 10),
-            Text('Edit Voice', style: TextStyle(fontWeight: FontWeight.w700)),
+            Icon(Icons.edit_rounded, color: CareSoulTheme.primary, size: 28),
+            SizedBox(width: 12),
+            Text('Edit Voice Profile', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 20)),
           ]),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextField(controller: nameCtrl, style: const TextStyle(fontSize: 17),
-                decoration: const InputDecoration(labelText: 'Recording Name', prefixIcon: Icon(Icons.label_outlined, size: 22))),
+              TextField(
+                controller: nameCtrl,
+                style: const TextStyle(fontSize: 16),
+                decoration: InputDecoration(
+                    labelText: 'Recording Name',
+                    prefixIcon: const Icon(Icons.label_outlined, size: 22),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
+              ),
               const SizedBox(height: 16),
               InkWell(
                 onTap: () async {
                   final t = await showTimePicker(context: context, initialTime: selectedTime);
                   if (t != null) setDialogState(() => selectedTime = t);
                 },
-                borderRadius: BorderRadius.circular(14),
+                borderRadius: BorderRadius.circular(12),
                 child: InputDecorator(
-                  decoration: const InputDecoration(labelText: 'Alarm Time', prefixIcon: Icon(Icons.schedule_rounded, size: 22)),
-                  child: Text(selectedTime.format(context), style: const TextStyle(fontSize: 17)),
+                  decoration: InputDecoration(
+                      labelText: 'Broadcast Time',
+                      prefixIcon: const Icon(Icons.schedule_rounded, size: 22),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
+                  child: Text(selectedTime.format(context), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
                 ),
               ),
               const SizedBox(height: 16),
-              _VoiceDaysSelector(isEveryday: isEveryday, selectedDays: selectedDays, days: days,
-                onChanged: (everyday, d) { setDialogState(() { isEveryday = everyday; selectedDays = d; }); }),
+              _VoiceDaysSelector(
+                isEveryday: isEveryday,
+                selectedDays: selectedDays,
+                days: days,
+                onChanged: (everyday, d) {
+                  setDialogState(() {
+                    isEveryday = everyday;
+                    selectedDays = d;
+                  });
+                },
+              ),
             ]),
           ),
-          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          actionsPadding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
           actions: [
             Row(children: [
-              Expanded(child: OutlinedButton(onPressed: () => Navigator.pop(ctx),
-                style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 12)),
-                child: const Text('Cancel'))),
+              Expanded(
+                  child: OutlinedButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                      child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w600)))),
               const SizedBox(width: 12),
-              Expanded(child: FilledButton(
+              Expanded(
+                  child: FilledButton(
                 onPressed: () async {
+                  if (nameCtrl.text.trim().isEmpty) return;
                   final t = '${selectedTime.hour.toString().padLeft(2, '0')}:${selectedTime.minute.toString().padLeft(2, '0')}';
                   final d = isEveryday ? 'everyday' : (selectedDays.isEmpty ? 'everyday' : selectedDays.join(','));
+                  
+                  setState(() => _isLoading = true);
                   final success = await ApiService.updateVoice(v['id'], {
                     'name': nameCtrl.text.trim(),
                     'scheduled_time': t,
                     'days_of_week': d,
                   });
+                  
                   if (!context.mounted) return;
                   Navigator.pop(ctx);
-                  if (success) { _loadVoices(); ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Voice updated!'), backgroundColor: CareSoulTheme.success)); }
+                  if (success) {
+                    _loadVoices();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Voice profile updated!'), backgroundColor: CareSoulTheme.success));
+                  } else {
+                    setState(() => _isLoading = false);
+                  }
                 },
-                style: FilledButton.styleFrom(backgroundColor: const Color(0xFF7C3AED), padding: const EdgeInsets.symmetric(vertical: 12)),
-                child: const Text('Save'),
+                style: FilledButton.styleFrom(
+                    backgroundColor: CareSoulTheme.primary,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                child: const Text('Save Changes', style: TextStyle(fontWeight: FontWeight.w600)),
               )),
             ]),
           ],
@@ -568,14 +603,41 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                             ),
                           ),
                           const SizedBox(height: 12),
-                          FilledButton.icon(
-                            onPressed: _uploadVoice,
-                            icon: const Icon(Icons.cloud_upload_rounded),
-                            label: const Text('Save Voice Profile'),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xFF7C3AED),
-                              minimumSize: const Size(220, 50),
-                            ),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () {
+                                    setState(() {
+                                      _hasRecording = false;
+                                      _recordedBlobUrl = null;
+                                    });
+                                  },
+                                  style: OutlinedButton.styleFrom(
+                                    foregroundColor: Colors.grey[700],
+                                    side: BorderSide(color: Colors.grey[300]!),
+                                    padding: const EdgeInsets.symmetric(vertical: 14),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                  child: const Text('Discard', style: TextStyle(fontWeight: FontWeight.w600)),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                flex: 2,
+                                child: FilledButton.icon(
+                                  onPressed: _uploadVoice,
+                                  icon: const Icon(Icons.cloud_upload_rounded, size: 20),
+                                  label: const Text('Save Voice Profile'),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: CareSoulTheme.primary,
+                                    padding: const EdgeInsets.symmetric(vertical: 14),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ],
@@ -621,145 +683,179 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                       _voices.length,
                       (index) {
                         final v = _voices[index];
+                        final id = v['id'];
+                        final isActive = v['is_active'] ?? true;
+                        final daysStr = v['days_of_week'] ?? 'everyday';
+
                         return Container(
-                          margin: const EdgeInsets.only(bottom: 10),
+                          margin: const EdgeInsets.only(bottom: 14),
                           decoration: BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.circular(16),
+                            borderRadius: BorderRadius.circular(20),
                             border: Border.all(
-                                color: const Color(0xFF7C3AED)
-                                    .withValues(alpha: 0.1)),
+                                color: isActive
+                                    ? CareSoulTheme.primary.withValues(alpha: 0.12)
+                                    : Colors.grey.withValues(alpha: 0.15),
+                                width: 1.5),
                             boxShadow: [
                               BoxShadow(
-                                color: Colors.grey.withValues(alpha: 0.06),
-                                blurRadius: 8,
-                                offset: const Offset(0, 2),
+                                color: (isActive ? CareSoulTheme.primary : Colors.grey)
+                                    .withValues(alpha: 0.06),
+                                blurRadius: 12,
+                                offset: const Offset(0, 4),
                               ),
                             ],
                           ),
-                          child: ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 6),
-                            leading: Container(
-                              padding: const EdgeInsets.all(10),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF7C3AED)
-                                    .withValues(alpha: 0.1),
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: const Icon(Icons.record_voice_over_rounded,
-                                  color: Color(0xFF7C3AED)),
-                            ),
-                            title: Text(v['name'] ?? 'Voice',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w600, fontSize: 16)),
-                            subtitle: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.center,
                               children: [
-                                if (v['scheduled_time'] != null)
-                                  Text('⏰ ${v['scheduled_time']}',
-                                      style: TextStyle(
-                                          fontSize: 13, color: Colors.grey[600])),
-                                Text(
-                                  () {
-                                    final d = v['days_of_week'] ?? 'everyday';
-                                    return d == 'everyday' ? '📅 Everyday' : '📅 $d';
-                                  }(),
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[500],
+                                // Compact Leading
+                                Container(
+                                  padding: const EdgeInsets.all(8),
+                                  decoration: BoxDecoration(
+                                    color: (isActive ? CareSoulTheme.primary : Colors.grey)
+                                        .withValues(alpha: 0.08),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Icon(
+                                    Icons.mic_none_rounded,
+                                    color: isActive ? CareSoulTheme.primary : Colors.grey,
+                                    size: 22,
                                   ),
                                 ),
-                              ],
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: Icon(
-                                    _playingVoiceId == v['id']
-                                        ? Icons.stop_rounded
-                                        : Icons.play_arrow_rounded,
-                                    color: _playingVoiceId == v['id']
-                                        ? Colors.red
-                                        : CareSoulTheme.primary,
-                                  ),
-                                  onPressed: () async {
-                                    final messenger =
-                                        ScaffoldMessenger.of(context);
-                                    if (_playingVoiceId == v['id']) {
-                                      await _audioPlayer.stop();
-                                      setState(() => _playingVoiceId = null);
-                                    } else {
-                                      try {
-                                        await _audioPlayer.stop();
-                                        setState(
-                                            () => _playingVoiceId = v['id']);
-                                        final url =
-                                            ApiConfig.fileUrl(v['file_url']);
-                                        debugPrint('Playing voice from: $url');
-                                        await _audioPlayer.play(UrlSource(url));
-                                        _audioPlayer.onPlayerComplete
-                                            .listen((_) {
-                                          if (mounted) {
-                                            setState(
-                                                () => _playingVoiceId = null);
-                                          }
-                                        });
-                                      } catch (e) {
-                                        debugPrint('Play error: $e');
-                                        if (mounted) {
-                                          setState(
-                                              () => _playingVoiceId = null);
-                                          messenger.showSnackBar(
-                                            SnackBar(
-                                              content: Text(
-                                                  'Could not play: ${e.toString().substring(0, 50)}'),
-                                              backgroundColor: Colors.orange,
+                                const SizedBox(width: 12),
+                                
+                                // Main Content
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              v['name'] ?? 'Voice Profile',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                fontSize: 17,
+                                                fontWeight: FontWeight.w700,
+                                                color: isActive ? CareSoulTheme.textPrimary : Colors.grey,
+                                              ),
                                             ),
-                                          );
+                                          ),
+                                          // Play button next to title to save horizontal space in trailing
+                                          IconButton(
+                                            visualDensity: VisualDensity.compact,
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(),
+                                            icon: Icon(
+                                              _playingVoiceId == id
+                                                  ? Icons.stop_circle_rounded
+                                                  : Icons.play_circle_filled_rounded,
+                                              color: _playingVoiceId == id
+                                                  ? Colors.red
+                                                  : CareSoulTheme.primary,
+                                              size: 26,
+                                            ),
+                                            onPressed: () async {
+                                              if (_playingVoiceId == id) {
+                                                await _audioPlayer.stop();
+                                                setState(() => _playingVoiceId = null);
+                                              } else {
+                                                try {
+                                                  await _audioPlayer.stop();
+                                                  setState(() => _playingVoiceId = id);
+                                                  final url = ApiConfig.fileUrl(v['file_url']);
+                                                  await _audioPlayer.play(UrlSource(url));
+                                                  _audioPlayer.onPlayerComplete.listen((_) {
+                                                    if (mounted) setState(() => _playingVoiceId = null);
+                                                  });
+                                                } catch (e) {
+                                                  if (mounted) setState(() => _playingVoiceId = null);
+                                                }
+                                              }
+                                            },
+                                          ),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Row(
+                                        children: [
+                                          Icon(Icons.schedule_rounded, size: 13, color: Colors.grey[500]),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            v['scheduled_time'] ?? '08:00',
+                                            style: TextStyle(
+                                                fontSize: 13,
+                                                color: Colors.grey[600],
+                                                fontWeight: FontWeight.w500),
+                                          ),
+                                          const SizedBox(width: 10),
+                                          Icon(Icons.calendar_today_rounded, size: 12, color: Colors.grey[500]),
+                                          const SizedBox(width: 4),
+                                          Expanded(
+                                            child: Text(
+                                              daysStr == 'everyday' ? 'Everyday' : daysStr,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                
+                                // Compact Trailing Actions
+                                Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    PopupMenuButton<String>(
+                                      icon: Icon(Icons.more_horiz_rounded, color: Colors.grey[400], size: 20),
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                      onSelected: (value) {
+                                        if (value == 'edit') {
+                                          _editVoice(v);
+                                        } else if (value == 'delete') {
+                                          _deleteVoice(id, v['name'] ?? 'Voice');
                                         }
-                                      }
-                                    }
-                                  },
-                                ),
-                                Switch(
-                                  value: v['is_active'] ?? true,
-                                  activeThumbColor: CareSoulTheme.primary,
-                                  onChanged: (val) async {
-                                    final success =
-                                        await ApiService.updateVoice(
-                                            v['id'], {'is_active': val});
-                                    if (success) _loadVoices();
-                                  },
-                                ),
-                                PopupMenuButton<String>(
-                                  icon: Icon(Icons.more_vert_rounded, color: Colors.grey[600]),
-                                  padding: EdgeInsets.zero,
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                                  onSelected: (value) {
-                                    if (value == 'edit') {
-                                      _editVoice(v);
-                                    } else if (value == 'delete') {
-                                      _deleteVoice(v['id'], v['name'] ?? 'Voice');
-                                    }
-                                  },
-                                  itemBuilder: (context) => [
-                                    PopupMenuItem(
-                                      value: 'edit',
-                                      child: Row(children: [
-                                        Icon(Icons.edit_outlined, color: Colors.blue[600], size: 20),
-                                        const SizedBox(width: 12),
-                                        const Text('Edit'),
-                                      ]),
+                                      },
+                                      itemBuilder: (context) => [
+                                        PopupMenuItem(
+                                          value: 'edit',
+                                          child: Row(children: [
+                                            Icon(Icons.edit_note_rounded, color: Colors.blue[600], size: 18),
+                                            const SizedBox(width: 8),
+                                            const Text('Edit', style: TextStyle(fontSize: 14)),
+                                          ]),
+                                        ),
+                                        PopupMenuItem(
+                                          value: 'delete',
+                                          child: Row(children: [
+                                            Icon(Icons.delete_sweep_rounded, color: Colors.red[600], size: 18),
+                                            const SizedBox(width: 8),
+                                            const Text('Delete', style: TextStyle(color: Colors.red, fontSize: 14)),
+                                          ]),
+                                        ),
+                                      ],
                                     ),
-                                    PopupMenuItem(
-                                      value: 'delete',
-                                      child: Row(children: [
-                                        Icon(Icons.delete_outline_rounded, color: Colors.red[600], size: 20),
-                                        const SizedBox(width: 12),
-                                        const Text('Delete', style: TextStyle(color: Colors.red)),
-                                      ]),
+                                    Transform.scale(
+                                      scale: 0.7,
+                                      child: Switch(
+                                        value: isActive,
+                                        activeColor: CareSoulTheme.primary,
+                                        onChanged: (val) async {
+                                          final success = await ApiService.updateVoice(id, {'is_active': val});
+                                          if (success) _loadVoices();
+                                        },
+                                      ),
                                     ),
                                   ],
                                 ),
