@@ -372,7 +372,7 @@ void pollSchedule() {
     const char* volStr = doc["settings"]["volume"] | "medium";
     int volLevel = 18;
     if (strcmp(volStr, "low") == 0)       volLevel = 14;
-    else if (strcmp(volStr, "high") == 0) volLevel = 25;
+    else if (strcmp(volStr, "high") == 0) volLevel = 22;
 
     preferences.putInt("volume", volLevel);
     audio.setVolume(volLevel);

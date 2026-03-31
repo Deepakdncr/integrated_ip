@@ -118,3 +118,8 @@ app.*.symbols
 !**/ios/**/default.perspectivev3
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
 !/dev/ci/**/Gemfile.lock
+
+# Backend uploads and cache
+memory_aide_backend/uploads/
+memory_aide_backend/__pycache__/
+*.pyc
