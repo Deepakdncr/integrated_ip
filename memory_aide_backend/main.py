@@ -323,6 +323,8 @@ def create_tables():
         )
     """)
     cur.execute("ALTER TABLE device_status ADD COLUMN IF NOT EXISTS sos_active BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE device_status ADD COLUMN IF NOT EXISTS battery_level INTEGER DEFAULT 100")
+    cur.execute("ALTER TABLE device_status ADD COLUMN IF NOT EXISTS is_charging BOOLEAN DEFAULT FALSE")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS otps (

@@ -209,8 +209,9 @@ void setup() {
 
   // Init I2S audio
   audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-  // Increase internal buffer to 40KB for smoother playback 
-  audio.setBufsize(40000, 0);
+  // 40960 → library uses ~38KB usable RAM buffer (no PSRAM on this board).
+  // Larger buffer = fewer SD read stalls = no INDATA_UNDERFLOW pops.
+  audio.setBufsize(40960, 0);
   int savedVol = preferences.getInt("volume", 18);
   audio.setVolume(savedVol); // Dynamic volume (0-25)
 
@@ -415,9 +416,19 @@ void pollSchedule() {
       if (!SD.exists(filename)) downloadTTStoFile(String(msg), filename);
     } else if (audioUrl.length() > 0) {
       filename = getSafeFilename(String(type), audioUrl);
-      if (!SD.exists(filename)) {
+      // Check existence AND size – a 0-byte file from a failed previous
+      // download must be re-fetched, not silently skipped.
+      bool needsDL = !SD.exists(filename);
+      if (!needsDL) {
+        File chk = SD.open(filename);
+        if (chk && chk.size() < 1024) { needsDL = true; }
+        if (chk) chk.close();
+      }
+      if (needsDL) {
         Serial.printf("[Cache] Downloading %s: %s\n", type, filename.c_str());
         downloadAudioFile(audioUrl, filename);
+      } else {
+        Serial.printf("[Cache] Already cached: %s\n", filename.c_str());
       }
     }
     if (filename.length() > 0) filesInSchedule.push_back(filename);
@@ -571,7 +582,44 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
 
     // Play from SD cache if available
     if (sdCardReady && SD.exists(matched[i].filename)) {
-      Serial.printf("[Play] Found in SD cache: %s\n", matched[i].filename.c_str());
+      // ── Guard: reject corrupt / incomplete cached files (<10 KB) ──
+      File testF = SD.open(matched[i].filename);
+      size_t fileSize = testF ? testF.size() : 0;
+      if (testF) testF.close();
+
+      if (fileSize < 10240) {
+        Serial.printf("[Play] WARN: Cached file too small (%u bytes).\n", fileSize);
+        SD.remove(matched[i].filename);
+        // ── Fallback: stream directly from server instead of blocking download ──
+        // downloadAudioFile() would block here for up to 30s. Instead we stream
+        // via connecttohost() which plays immediately without saving to SD.
+        if (WiFi.status() == WL_CONNECTED && matched[i].ttsText.length() > 0) {
+          Serial.printf("[Play] Streaming fallback: %s\n", matched[i].ttsText.c_str());
+          int vol = preferences.getInt("volume", 18);
+          audio.setVolume(vol);
+          audio.connecttohost(matched[i].ttsText.c_str());
+          unsigned long startWait = millis();
+          bool started = false;
+          while (millis() - startWait < 12000) {
+            audio.loop();
+            checkSOSButton();
+            if (sosActive) { audio.stopSong(); return; }
+            if (audio.isRunning()) { started = true; break; }
+          }
+          if (!started) Serial.println("[Play] Stream fallback failed to start.");
+          while (audio.isRunning()) {
+            audio.loop();
+            checkSOSButton();
+            if (sosActive) { audio.stopSong(); return; }
+          }
+        } else {
+          Serial.println("[Play] Offline + no valid cache – skipping.");
+        }
+        // File is bad and we've handled it – move to next action
+        continue;
+      }
+
+      Serial.printf("[Play] Found in SD cache: %s (%u bytes)\n", matched[i].filename.c_str(), fileSize);
       int repeatCount = (matched[i].type == "medicine" || matched[i].type == "habit" || matched[i].type == "voice") ? 2 : 1;
       for (int r = 0; r < repeatCount; r++) {
         int vol = preferences.getInt("volume", 18);
@@ -580,13 +628,15 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
         audio.connecttoSD(matched[i].filename.c_str());
         unsigned long startWait = millis();
         bool started = false;
-        while ((millis() - startWait < 5000)) {
+        while (millis() - startWait < 5000) {
           audio.loop();
           checkSOSButton();
           if (sosActive) { audio.stopSong(); return; }
           if (audio.isRunning()) { started = true; break; }
         }
-        if (!started) Serial.println("[Play] ERROR: Audio failed to start.");
+        if (!started) {
+          Serial.println("[Play] ERROR: Audio failed to start.");
+        }
         while (audio.isRunning()) {
           audio.loop();
           checkSOSButton();
@@ -694,7 +744,7 @@ void downloadAudioFile(String url, String filename) {
   HTTPClient http;
   Serial.printf("[Cache] Downloading: %s\n", url.c_str());
   http.begin(url);
-  http.setTimeout(300000);  // 300s (5m) timeout for large music files
+  http.setTimeout(30000);   // 30s timeout – avoids hanging on slow/dead server
   int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK) {
     Serial.printf("[Cache] HTTP %d – download failed.\n", httpCode);
