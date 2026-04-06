@@ -1199,8 +1199,15 @@ def serve_music_file(filename: str):
     filepath = os.path.join(UPLOAD_DIR, "music", filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Music file not found")
+    file_size = os.path.getsize(filepath)
     # FileResponse handles range headers and large files efficiently
-    return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
+    # Explicitly set Content-Length so ESP32 HTTPClient knows exact download size
+    return FileResponse(
+        filepath,
+        media_type="audio/mpeg",
+        filename=filename,
+        headers={"Content-Length": str(file_size)},
+    )
 
 
 @app.get("/uploads/voices/{filename}")
@@ -1209,11 +1216,17 @@ def serve_voice_file(filename: str):
     filepath = os.path.join(UPLOAD_DIR, "voices", filename)
     if not os.path.exists(filepath):
         raise HTTPException(status_code=404, detail="Voice file not found")
+    file_size = os.path.getsize(filepath)
     # Detect MIME type based on extension
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'wav'
     mime_map = {'wav': 'audio/wav', 'mp3': 'audio/mpeg', 'ogg': 'audio/ogg', 'm4a': 'audio/mp4'}
     media_type = mime_map.get(ext, 'audio/wav')
-    return FileResponse(filepath, media_type=media_type, filename=filename)
+    return FileResponse(
+        filepath,
+        media_type=media_type,
+        filename=filename,
+        headers={"Content-Length": str(file_size)},
+    )
 
 
 @app.put("/music/{music_id}")
