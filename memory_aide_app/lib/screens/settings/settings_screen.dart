@@ -5,7 +5,7 @@ import '../../config/theme.dart';
 import '../auth/login_screen.dart';
 import '../device/device_sync_screen.dart';
 
-/// Settings screen – volume control (3-level) and language (English/Tamil only).
+/// Settings screen – volume control, language (English/Tamil), and synthetic voice selection.
 /// Saves to backend API on change.
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -17,9 +17,32 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   String _volume = 'medium';
   String _language = 'en';
+  String _voiceId = 'default';
   bool _isLoading = true;
 
   String? _userId;
+
+  // Available synthetic voices (Indian accent options)
+  static const List<Map<String, String>> _syntheticVoices = [
+    {
+      'id': 'default',
+      'name': 'Priya',
+      'description': 'Indian Female · Warm & Clear',
+      'flag': '🇮🇳',
+    },
+    {
+      'id': 'indian_male',
+      'name': 'Raj',
+      'description': 'Indian Male · Deep & Friendly',
+      'flag': '🇮🇳',
+    },
+    {
+      'id': 'south_indian',
+      'name': 'Kavya',
+      'description': 'South Indian Female · Gentle',
+      'flag': '🇮🇳',
+    },
+  ];
 
   @override
   void initState() {
@@ -35,6 +58,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         setState(() {
           _volume = data['volume'] ?? 'medium';
           _language = data['language'] ?? 'en';
+          _voiceId = data['voice_id'] ?? 'default';
         });
       }
     }
@@ -45,7 +69,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (_userId == null) return;
     final success = await ApiService.updateSettings(
       _userId!,
-      {'volume': _volume, 'language': _language},
+      {'volume': _volume, 'language': _language, 'voice_id': _voiceId},
     );
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -254,7 +278,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    'Language',
+                                    'Announcement Language',
                                     style: TextStyle(
                                       fontSize: 20,
                                       fontWeight: FontWeight.w700,
@@ -262,7 +286,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ),
                                   SizedBox(height: 2),
                                   Text(
-                                    'Audio announcement language',
+                                    'Language used for IoT voice announcements',
                                     style: TextStyle(
                                       fontSize: 13,
                                       color: CareSoulTheme.textSecondary,
@@ -282,16 +306,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             segments: const [
                               ButtonSegment(
                                 value: 'en',
-                                label: Text('English',
+                                label: Text('🇬🇧  English',
                                     style: TextStyle(
-                                        fontSize: 16,
+                                        fontSize: 15,
                                         fontWeight: FontWeight.w600)),
                               ),
                               ButtonSegment(
                                 value: 'ta',
-                                label: Text('Tamil',
+                                label: Text('🇮🇳  Tamil',
                                     style: TextStyle(
-                                        fontSize: 16,
+                                        fontSize: 15,
                                         fontWeight: FontWeight.w600)),
                               ),
                             ],
@@ -304,6 +328,185 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               minimumSize:
                                   WidgetStateProperty.all(const Size(0, 52)),
                             ),
+                          ),
+                        ),
+
+                        if (_language == 'ta') ...[
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF2563EB).withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                  color: const Color(0xFF2563EB).withValues(alpha: 0.2)),
+                            ),
+                            child: const Row(
+                              children: [
+                                Icon(Icons.info_outline_rounded,
+                                    color: Color(0xFF2563EB), size: 18),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'தமிழ் மொழியில் மருந்து மற்றும் பழக்க அறிவிப்புகள் வழங்கப்படும்.',
+                                    style: TextStyle(
+                                        fontSize: 13,
+                                        color: Color(0xFF1D4ED8),
+                                        fontWeight: FontWeight.w500),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // ── Synthetic Voice Selection ──
+                  Container(
+                    decoration: CareSoulTheme.cardDecoration,
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF7C3AED)
+                                    .withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Icon(
+                                Icons.record_voice_over_rounded,
+                                color: Color(0xFF7C3AED),
+                                size: 24,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            const Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'Synthetic Voice',
+                                    style: TextStyle(
+                                      fontSize: 20,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  SizedBox(height: 2),
+                                  Text(
+                                    'TTS voice for reminders & habits',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: CareSoulTheme.textSecondary,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+
+                        // Voice options
+                        ..._syntheticVoices.map((voice) {
+                          final isSelected = _voiceId == voice['id'];
+                          return GestureDetector(
+                            onTap: () {
+                              setState(() => _voiceId = voice['id']!);
+                              _saveSettings();
+                            },
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 14),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? const Color(0xFF7C3AED)
+                                        .withValues(alpha: 0.08)
+                                    : Colors.grey.withValues(alpha: 0.04),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: isSelected
+                                      ? const Color(0xFF7C3AED)
+                                      : Colors.grey.withValues(alpha: 0.2),
+                                  width: isSelected ? 2 : 1,
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Text(voice['flag']!,
+                                      style: const TextStyle(fontSize: 24)),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          voice['name']!,
+                                          style: TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.w700,
+                                            color: isSelected
+                                                ? const Color(0xFF7C3AED)
+                                                : CareSoulTheme.textPrimary,
+                                          ),
+                                        ),
+                                        Text(
+                                          voice['description']!,
+                                          style: TextStyle(
+                                            fontSize: 13,
+                                            color: isSelected
+                                                ? const Color(0xFF7C3AED)
+                                                    .withValues(alpha: 0.8)
+                                                : CareSoulTheme.textSecondary,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (isSelected)
+                                    const Icon(Icons.check_circle_rounded,
+                                        color: Color(0xFF7C3AED), size: 22)
+                                  else
+                                    Icon(Icons.radio_button_unchecked_rounded,
+                                        color: Colors.grey.withValues(alpha: 0.4),
+                                        size: 22),
+                                ],
+                              ),
+                            ),
+                          );
+                        }),
+
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF7C3AED).withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.info_outline_rounded,
+                                  color: Color(0xFF7C3AED), size: 16),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'All voices use Indian-accent gTTS synthesis on the backend server.',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Color(0xFF5B21B6),
+                                      fontWeight: FontWeight.w500),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ],

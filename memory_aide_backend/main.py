@@ -3,7 +3,7 @@ CareSoul – Smart Medication Audio Assistant
 FastAPI Backend with PostgreSQL
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Form, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -180,6 +180,8 @@ class HabitCreate(BaseModel):
     scheduled_time: str
     duration_minutes: int = 0
     days_of_week: str = "everyday"
+    repeat_count: int = 2
+    repeat_interval_minutes: int = 5
 
 
 class HabitUpdate(BaseModel):
@@ -188,6 +190,8 @@ class HabitUpdate(BaseModel):
     duration_minutes: Optional[int] = None
     is_active: Optional[bool] = None
     days_of_week: Optional[str] = None
+    repeat_count: Optional[int] = None
+    repeat_interval_minutes: Optional[int] = None
 
 
 class MusicScheduleCreate(BaseModel):
@@ -207,6 +211,7 @@ class MusicScheduleUpdate(BaseModel):
 class SettingsUpdate(BaseModel):
     volume: Optional[str] = None  # low, medium, high
     language: Optional[str] = None
+    voice_id: Optional[str] = None  # synthetic voice id e.g. 'indian_female_1'
 
 
 # ============================================================
@@ -225,6 +230,7 @@ def create_tables():
             password_hash TEXT NOT NULL,
             volume TEXT DEFAULT 'medium',
             language TEXT DEFAULT 'en',
+            voice_id TEXT DEFAULT 'default',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -274,10 +280,14 @@ def create_tables():
             duration_minutes INTEGER DEFAULT 0,
             is_active BOOLEAN DEFAULT TRUE,
             days_of_week TEXT DEFAULT 'everyday',
+            repeat_count INTEGER DEFAULT 2,
+            repeat_interval_minutes INTEGER DEFAULT 5,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     cur.execute("ALTER TABLE habit_routines ADD COLUMN IF NOT EXISTS days_of_week TEXT DEFAULT 'everyday'")
+    cur.execute("ALTER TABLE habit_routines ADD COLUMN IF NOT EXISTS repeat_count INTEGER DEFAULT 2")
+    cur.execute("ALTER TABLE habit_routines ADD COLUMN IF NOT EXISTS repeat_interval_minutes INTEGER DEFAULT 5")
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS voice_profiles (
@@ -338,6 +348,7 @@ def create_tables():
 
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_verified BOOLEAN DEFAULT FALSE")
+    cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS voice_id TEXT DEFAULT 'default'")
 
     # Drop legacy FK constraints on reminders and device_status so user_id
     # can hold arbitrary values like 'test_user' without referencing users table.
@@ -936,11 +947,11 @@ def create_habit(habit: HabitCreate):
         hid = str(uuid.uuid4())
         cur.execute(
             """INSERT INTO habit_routines
-            (id, user_id, patient_id, title, scheduled_time, duration_minutes, days_of_week)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (id, user_id, patient_id, title, scheduled_time, duration_minutes, days_of_week, repeat_count, repeat_interval_minutes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (hid, habit.patient_id, habit.patient_id, habit.title,
              habit.scheduled_time, habit.duration_minutes,
-             habit.days_of_week or "everyday"),
+             habit.days_of_week or "everyday", habit.repeat_count, habit.repeat_interval_minutes),
         )
         conn.commit()
         return {"message": "Habit created", "id": hid}
@@ -955,7 +966,7 @@ def update_habit(habit_id: str, update: HabitUpdate):
     cur = conn.cursor()
     try:
         fields, values = [], []
-        for field_name in ["title", "scheduled_time", "duration_minutes", "is_active", "days_of_week"]:
+        for field_name in ["title", "scheduled_time", "duration_minutes", "is_active", "days_of_week", "repeat_count", "repeat_interval_minutes"]:
             val = getattr(update, field_name)
             if val is not None:
                 fields.append(f"{field_name}=%s")
@@ -1271,16 +1282,27 @@ def delete_music(music_id: str):
 # ============================================================
 
 @app.get("/device/tts")
-def get_device_tts(text: str):
+def get_device_tts(text: str, lang: str = "en"):
     """
     Local proxy for TTS so ESP32 doesn't drop out from slow internet streams.
-    Caches the audio file based on the text hash.
+    Caches the audio file based on the text hash + language.
+    Supports lang='en' (English) and lang='ta' (Tamil) via gTTS.
     """
-    filename = f"tts_{hashlib.md5(text.encode()).hexdigest()}.mp3"
+    # Validate language – only allow supported gTTS langs
+    supported_langs = {"en", "ta", "hi"}
+    if lang not in supported_langs:
+        lang = "en"
+    cache_key = f"{lang}_{hashlib.md5(text.encode()).hexdigest()}"
+    filename = f"tts_{cache_key}.mp3"
     filepath = os.path.join(UPLOAD_DIR, "voices", filename)
     if not os.path.exists(filepath):
-        tts = gTTS(text=text, lang="en", slow=False)
-        tts.save(filepath)
+        try:
+            tts = gTTS(text=text, lang=lang, slow=False)
+            tts.save(filepath)
+        except Exception as e:
+            print(f"[TTS] gTTS failed for lang={lang}: {e}. Falling back to English.")
+            tts = gTTS(text=text, lang="en", slow=False)
+            tts.save(filepath)
     return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
 
 
@@ -1329,7 +1351,7 @@ def _is_active_today(days_of_week: str) -> bool:
 
 # IoT Device Polling Endpoint
 @app.get("/device/pending/{device_id}")
-def get_pending_actions(device_id: str):
+def get_pending_actions(device_id: str, request: Request):
     """
     Called by ESP32 device to get all active scheduled actions.
     No auth required (device uses device_id).
@@ -1348,11 +1370,13 @@ def get_pending_actions(device_id: str):
 
         user_id = device["user_id"]
         actions = []
-        base_url = os.getenv("BASE_URL", f"http://{os.getenv('SERVER_IP','localhost')}:8000")
+        # Derive base_url from the actual incoming request so it's always correct,
+        # regardless of which network/IP the server is running on.
+        base_url = str(request.base_url).rstrip("/")
 
         # 1. Medicine reminders (priority 1 – highest)
         cur.execute(
-            "SELECT medicine_name, dosage, time_of_day, days_of_week FROM reminders "
+            "SELECT medicine_name, dosage, time_of_day, days_of_week, repeat_count, repeat_interval_minutes FROM reminders "
             "WHERE user_id=%s AND is_active=TRUE ORDER BY time_of_day ASC",
             (user_id,),
         )
@@ -1367,6 +1391,8 @@ def get_pending_actions(device_id: str):
                     "medicine_name": r["medicine_name"],
                     "dosage": r["dosage"],
                 },
+                "repeat_count": r.get("repeat_count", 2),
+                "repeat_interval_minutes": r.get("repeat_interval_minutes", 5),
                 # Legacy fields for backward-compat with older firmware
                 "medicine_name": r["medicine_name"],
                 "dosage": r["dosage"],
@@ -1398,7 +1424,7 @@ def get_pending_actions(device_id: str):
 
         # 3. Habit routines (priority 3)
         cur.execute(
-            "SELECT title, scheduled_time, days_of_week FROM habit_routines "
+            "SELECT title, scheduled_time, days_of_week, repeat_count, repeat_interval_minutes FROM habit_routines "
             "WHERE user_id=%s AND is_active=TRUE ORDER BY scheduled_time ASC",
             (user_id,),
         )
@@ -1413,6 +1439,8 @@ def get_pending_actions(device_id: str):
                     "title": h["title"],
                     "message": f"Time for {h['title']}",
                 },
+                "repeat_count": h.get("repeat_count", 2),
+                "repeat_interval_minutes": h.get("repeat_interval_minutes", 5),
                 # Legacy
                 "time_of_day": h["scheduled_time"],
             })
@@ -1449,7 +1477,7 @@ def get_pending_actions(device_id: str):
         conn.commit()
 
         # Get user settings
-        cur.execute("SELECT volume, language FROM users WHERE id=%s", (user_id,))
+        cur.execute("SELECT volume, language, voice_id FROM users WHERE id=%s", (user_id,))
         settings = cur.fetchone()
         
         print(f"[Device] Returning {len(actions)} actions for device {device_id} (user: {user_id})")
@@ -1457,7 +1485,8 @@ def get_pending_actions(device_id: str):
             "actions": actions,
             "settings": {
                 "volume": settings["volume"] if settings else "medium",
-                "language": settings["language"] if settings else "en"
+                "language": settings["language"] if settings else "en",
+                "voice_id": settings["voice_id"] if settings else "default"
             }
         }
     finally:
@@ -1524,7 +1553,7 @@ def get_settings(user_id: str):
     conn = get_connection()
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     try:
-        cur.execute("SELECT volume, language FROM users WHERE id=%s", (user_id,))
+        cur.execute("SELECT volume, language, voice_id FROM users WHERE id=%s", (user_id,))
         settings = cur.fetchone()
         if not settings:
             raise HTTPException(status_code=404, detail="User not found")
@@ -1546,6 +1575,9 @@ def update_settings(user_id: str, update: SettingsUpdate):
         if update.language is not None:
             fields.append("language=%s")
             values.append(update.language)
+        if update.voice_id is not None:
+            fields.append("voice_id=%s")
+            values.append(update.voice_id)
         if not fields:
             raise HTTPException(status_code=400, detail="No fields to update")
         values.append(user_id)

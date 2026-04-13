@@ -238,6 +238,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
     final nameCtrl = TextEditingController();
     final dosageCtrl = TextEditingController();
     final durationCtrl = TextEditingController();
+    final repeatCountCtrl = TextEditingController(text: '2');
     TimeOfDay selectedTime = const TimeOfDay(hour: 8, minute: 0);
     String foodInstruction = 'Anytime';
     bool isEveryday = true;
@@ -379,29 +380,43 @@ class _RemindersScreenState extends State<RemindersScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: CareSoulTheme.primary.withValues(alpha: 0.05),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: CareSoulTheme.primary.withValues(alpha: 0.15)),
+                TextField(
+                  controller: repeatCountCtrl,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 17),
+                  decoration: const InputDecoration(
+                    labelText: 'Repeat Count',
+                    hintText: 'e.g. 2',
+                    prefixIcon: Icon(Icons.repeat_rounded, size: 22),
+                    helperText: 'How many times device will announce',
                   ),
-                  child: const Row(
-                    children: [
-                      Icon(Icons.volume_up_rounded,
-                          color: CareSoulTheme.primary, size: 20),
-                      SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Device will announce medicine name + dosage twice with 5-min interval',
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: CareSoulTheme.primary,
-                              fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 16),
+                StatefulBuilder(
+                  builder: (_, __) => Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: CareSoulTheme.primary.withValues(alpha: 0.05),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: CareSoulTheme.primary.withValues(alpha: 0.15)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.volume_up_rounded,
+                            color: CareSoulTheme.primary, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Device will announce medicine name + dosage ${repeatCountCtrl.text.isEmpty ? 2 : (int.tryParse(repeatCountCtrl.text) ?? 2)} time(s) with 5-min interval',
+                            style: const TextStyle(
+                                fontSize: 12,
+                                color: CareSoulTheme.primary,
+                                fontWeight: FontWeight.w500),
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -444,7 +459,7 @@ class _RemindersScreenState extends State<RemindersScreen> {
                         'frequency': isEveryday ? 'Daily' : daysStr,
                         'time_of_day': timeStr,
                         'food_instruction': foodInstruction,
-                        'repeat_count': 2,
+                        'repeat_count': int.tryParse(repeatCountCtrl.text.trim()) ?? 2,
                         'repeat_interval_minutes': 5,
                         'days_of_week': daysStr,
                         'duration_days': durationCtrl.text.trim(),

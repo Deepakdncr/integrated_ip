@@ -54,7 +54,7 @@
 // ──────────────────────────────────────────────
 const char* WIFI_SSID     = "OnePlus Nord";
 const char* WIFI_PASSWORD = "11111111";
-const char* SERVER_IP     = "10.152.144.17";
+const char* SERVER_IP     = "10.223.245.17";
 const int   SERVER_PORT   = 8000;
 const char* DEVICE_ID     = "ESP32-001";
 
@@ -402,9 +402,9 @@ void pollSchedule() {
   // --- Update Audio Settings (Volume/Language) ---
   if (doc.containsKey("settings")) {
     const char* volStr = doc["settings"]["volume"] | "medium";
-    int volLevel = 18;
+    int volLevel = 20;
     if (strcmp(volStr, "low") == 0)       volLevel = 15;
-    else if (strcmp(volStr, "high") == 0) volLevel = 22;
+    else if (strcmp(volStr, "high") == 0) volLevel = 25;
 
     preferences.putInt("volume", volLevel);
     audio.setVolume(volLevel);

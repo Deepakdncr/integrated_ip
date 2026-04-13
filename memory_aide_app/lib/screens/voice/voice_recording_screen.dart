@@ -590,21 +590,26 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                         ),
 
                         if (_hasRecording) ...[
-                          const SizedBox(height: 16),
-                          // Preview button
-                          OutlinedButton.icon(
-                            onPressed: _playRecordedPreview,
-                            icon: const Icon(Icons.play_arrow_rounded),
-                            label: const Text('Preview Recording'),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFF7C3AED),
-                              side: const BorderSide(color: Color(0xFF7C3AED)),
-                              minimumSize: const Size(220, 46),
+                          const SizedBox(height: 20),
+                          // Preview button – full width
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _playRecordedPreview,
+                              icon: const Icon(Icons.play_arrow_rounded),
+                              label: const Text('Preview Recording'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xFF7C3AED),
+                                side: const BorderSide(color: Color(0xFF7C3AED)),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12)),
+                              ),
                             ),
                           ),
                           const SizedBox(height: 12),
+                          // Discard + Save row
                           Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                               Expanded(
                                 child: OutlinedButton(
@@ -618,9 +623,11 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                                     foregroundColor: Colors.grey[700],
                                     side: BorderSide(color: Colors.grey[300]!),
                                     padding: const EdgeInsets.symmetric(vertical: 14),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12)),
                                   ),
-                                  child: const Text('Discard', style: TextStyle(fontWeight: FontWeight.w600)),
+                                  child: const Text('Discard',
+                                      style: TextStyle(fontWeight: FontWeight.w600)),
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -633,7 +640,8 @@ class _VoiceRecordingScreenState extends State<VoiceRecordingScreen>
                                   style: FilledButton.styleFrom(
                                     backgroundColor: CareSoulTheme.primary,
                                     padding: const EdgeInsets.symmetric(vertical: 14),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(12)),
                                   ),
                                 ),
                               ),
