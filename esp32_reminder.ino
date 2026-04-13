@@ -38,7 +38,18 @@
  * Partition Scheme: Default 4MB with SPIFFS or "Huge APP" (no SPIFFS needed)
  */
 
+// ══════════════════════════════════════════
+// PRODUCTION CONFIG — UPDATE BEFORE FLASHING
+// ══════════════════════════════════════════
+// SERVER_IP     → Render URL without https://
+// SERVER_PORT   → 443
+// WIFI_SSID     → Update per device location
+// WIFI_PASSWORD → Update per device location
+// DEVICE_ID     → Unique per device (ESP32-001, ESP32-002...)
+// ══════════════════════════════════════════
+
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "Audio.h"
@@ -54,9 +65,15 @@
 // ──────────────────────────────────────────────
 const char* WIFI_SSID     = "OnePlus Nord";
 const char* WIFI_PASSWORD = "11111111";
-const char* SERVER_IP     = "10.152.144.17";
-const int   SERVER_PORT   = 8000;
+// PRODUCTION: Render URL (HTTPS, port 443).
+// Replace YOUR_RENDER_URL with the actual subdomain after deploying the backend.
+const char* API_BASE_URL  = "https://YOUR_RENDER_URL.onrender.com";
+const int   SERVER_PORT   = 443;
 const char* DEVICE_ID     = "ESP32-001";
+
+// Shared TLS client — setInsecure() skips cert validation (Render uses a valid
+// CA, but ESP32 root cert store is limited; this is the practical workaround).
+WiFiClientSecure secureClient;
 
 // Poll backend every 30 seconds
 const unsigned long POLL_INTERVAL_MS = 30000;
@@ -133,6 +150,9 @@ void setup() {
   delay(2000);  // Wait 2s so Serial Monitor can connect and show boot messages
   Serial.println("\n\n[CareSoul] Booting Unified System v3.2 (SOS Edition)...");
   Serial.println("[Boot] Initializing hardware...");
+
+  // TLS: skip cert validation so HTTPS calls to Render work without bundling root CAs.
+  secureClient.setInsecure();
 
   // Init SOS hardware
   pinMode(SOS_BUTTON_PIN, INPUT_PULLUP);
@@ -334,12 +354,12 @@ String getSafeFilename(String type, String url) {
 // BACKEND SYNC
 // ──────────────────────────────────────────────
 void pollSchedule() {
-  String url = String("http://") + SERVER_IP + ":" + SERVER_PORT + "/device/pending/" + DEVICE_ID;
+  String url = String(API_BASE_URL) + "/device/pending/" + DEVICE_ID;
   Serial.printf("[Sync] Fetching: %s\n", url.c_str());
 
   HTTPClient http;
-  http.begin(url);
-  http.setTimeout(10000);
+  http.begin(secureClient, url);
+  http.setTimeout(60000);
   int httpCode = http.GET();
 
   if (httpCode != HTTP_CODE_OK) {
@@ -654,8 +674,7 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
       Serial.printf("[Play] Cache miss – streaming: %s\n", matched[i].ttsText.c_str());
       if (matched[i].type == "medicine" || matched[i].type == "habit") {
         String encoded = urlEncode(matched[i].ttsText);
-        String ttsUrl  = String("http://") + SERVER_IP + ":" + SERVER_PORT +
-                         "/device/tts?text=" + encoded;
+        String ttsUrl  = String(API_BASE_URL) + "/device/tts?text=" + encoded;
         for (int r = 0; r < 2; r++) {
           int vol = preferences.getInt("volume", 18);
           audio.setVolume(vol);
@@ -716,7 +735,7 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
 // Download TTS audio from backend and save to SD card
 void downloadTTStoFile(String text, String filename) {
   String encoded = urlEncode(text);
-  String ttsUrl  = String("http://") + SERVER_IP + ":" + SERVER_PORT + "/device/tts?text=" + encoded;
+  String ttsUrl  = String(API_BASE_URL) + "/device/tts?text=" + encoded;
   downloadAudioFile(ttsUrl, filename);
 }
 
@@ -743,8 +762,8 @@ void downloadAudioFile(String url, String filename) {
 
   HTTPClient http;
   Serial.printf("[Cache] Downloading: %s\n", url.c_str());
-  http.begin(url);
-  http.setTimeout(30000);   // 30s timeout – avoids hanging on slow/dead server
+  http.begin(secureClient, url);
+  http.setTimeout(60000);   // 60s timeout – avoids hanging on slow/dead server
   int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK) {
     Serial.printf("[Cache] HTTP %d – download failed.\n", httpCode);
@@ -870,16 +889,17 @@ void notifySOS(bool triggered) {
   }
 
   HTTPClient http;
+  http.setTimeout(60000);
   if (triggered) {
-    String url = String("http://") + SERVER_IP + ":" + SERVER_PORT + "/sos/trigger";
-    http.begin(url);
+    String url = String(API_BASE_URL) + "/sos/trigger";
+    http.begin(secureClient, url);
     http.addHeader("Content-Type", "application/json");
     String body = "{\"device_id\":\"" + String(DEVICE_ID) + "\"}";
     int code = http.POST(body);
     Serial.printf("[SOS] Trigger notification sent – HTTP %d\n", code);
   } else {
-    String url = String("http://") + SERVER_IP + ":" + SERVER_PORT + "/sos/stop/" + DEVICE_ID;
-    http.begin(url);
+    String url = String(API_BASE_URL) + "/sos/stop/" + DEVICE_ID;
+    http.begin(secureClient, url);
     int code = http.sendRequest("DELETE");
     Serial.printf("[SOS] Stop notification sent – HTTP %d\n", code);
   }
@@ -889,8 +909,8 @@ void notifySOS(bool triggered) {
 // Check if app remotely stopped the SOS
 bool checkSOSRemoteStop() {
   HTTPClient http;
-  String url = String("http://") + SERVER_IP + ":" + SERVER_PORT + "/sos/status/" + DEVICE_ID;
-  http.begin(url);
+  String url = String(API_BASE_URL) + "/sos/status/" + DEVICE_ID;
+  http.begin(secureClient, url);
   http.setTimeout(800);  // Very short timeout so audio doesn't stutter
   int code = http.GET();
   if (code == 200) {

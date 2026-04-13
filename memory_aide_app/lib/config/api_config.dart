@@ -1,14 +1,12 @@
 // API configuration for CareSoul app.
 // Change [baseUrl] when deploying to production.
-import 'dart:io' show Platform;
-import 'package:flutter/foundation.dart';
 
 class ApiConfig {
   static String get baseUrl {
-    if (kIsWeb) return 'http://10.152.144.17:8000';
-    // Use the laptop's Wi-Fi IP so physical Android/iOS devices can reach the backend.
-    if (Platform.isAndroid || Platform.isIOS) return 'http://10.152.144.17:8000';
-    return 'http://10.152.144.17:8000';
+    // ✅ Production: Render backend URL
+    // Replace YOUR_RENDER_URL after deploying backend to Render
+    const String productionUrl = 'https://YOUR_RENDER_URL.onrender.com';
+    return productionUrl;
   }
 
   // Auth

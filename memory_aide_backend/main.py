@@ -1,12 +1,11 @@
 """
 CareSoul – Smart Medication Audio Assistant
-FastAPI Backend with PostgreSQL
+FastAPI Backend with PostgreSQL + Supabase Storage
 """
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import psycopg2
 import psycopg2.extras
@@ -26,8 +25,33 @@ from fastapi import BackgroundTasks
 from dotenv import load_dotenv
 from gtts import gTTS
 from moviepy import AudioFileClip
+from supabase import create_client
 
 load_dotenv()
+
+# Ensure local temp directory exists (used during audio transcoding before upload)
+os.makedirs("uploads", exist_ok=True)
+for folder in ["photos", "voices", "music", "prescriptions"]:
+    os.makedirs(os.path.join("uploads", folder), exist_ok=True)
+
+# PostgreSQL connection
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Supabase Storage
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY")
+SUPABASE_BUCKET = "caresoul-files"
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY) if SUPABASE_URL and SUPABASE_SERVICE_KEY else None
+
+
+def upload_to_supabase(file_bytes: bytes, filename: str, folder: str = "uploads", content_type: str = "application/octet-stream") -> str:
+    """Upload file bytes to Supabase Storage and return the public URL."""
+    path = f"{folder}/{filename}"
+    if supabase is None:
+        raise HTTPException(status_code=500, detail="Supabase Storage not configured")
+    supabase.storage.from_(SUPABASE_BUCKET).upload(path, file_bytes, {"content-type": content_type})
+    public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(path)
+    return public_url
 
 conf = ConnectionConfig(
     MAIL_USERNAME=os.environ.get("MAIL_USERNAME", "your_email@gmail.com"),
@@ -47,7 +71,7 @@ fm = FastMail(conf)
 # APP SETUP
 # ============================================================
 
-SECRET_KEY = "caresoul-secret-key-change-in-production"
+SECRET_KEY = os.environ.get("SECRET_KEY", "fallback-secret-key")
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 UPLOAD_DIR = "uploads"
@@ -62,26 +86,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Create upload directories
-for folder in ["photos", "voices", "music", "prescriptions"]:
-    os.makedirs(os.path.join(UPLOAD_DIR, folder), exist_ok=True)
-
-# Serve uploaded files statically
-# Serve uploaded files statically (MOVED TO BOTTOM)
-
 
 # ============================================================
 # DATABASE
 # ============================================================
 
 def get_connection():
-    return psycopg2.connect(
-        dbname="memory_aide",
-        user="postgres",
-        password="Deepak",
-        host="localhost",
-        port="5432",
-    )
+    return psycopg2.connect(DATABASE_URL)
 
 
 # ============================================================
@@ -625,11 +636,11 @@ def update_patient(user_id: str, update: PatientProfileUpdate):
 async def upload_patient_photo(user_id: str, file: UploadFile = File(...)):
     ext = file.filename.split(".")[-1] if file.filename else "jpg"
     filename = f"{user_id}.{ext}"
-    filepath = os.path.join(UPLOAD_DIR, "photos", filename)
-    with open(filepath, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    file_bytes = await file.read()
+    mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+    content_type = mime_map.get(ext.lower(), "image/jpeg")
+    file_url = upload_to_supabase(file_bytes, filename, folder="photos", content_type=content_type)
 
-    file_url = f"/uploads/photos/{filename}"
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -652,15 +663,15 @@ async def ocr_prescription(file: UploadFile = File(...)):
     """
     ext = file.filename.split(".")[-1].lower() if file.filename else "jpg"
     filename = f"{uuid.uuid4()}.{ext}"
-    filepath = os.path.join(UPLOAD_DIR, "prescriptions", filename)
-    
-    # Save the file first
-    with open(filepath, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    file_bytes = await file.read()
 
-    # Convert to base64 for API
-    with open(filepath, "rb") as image_file:
-        base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+    # Upload to Supabase Storage
+    mime_map_upload = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+    content_type = mime_map_upload.get(ext, "image/jpeg")
+    image_public_url = upload_to_supabase(file_bytes, filename, folder="prescriptions", content_type=content_type)
+
+    # Convert to base64 for AI API
+    base64_image = base64.b64encode(file_bytes).decode("utf-8")
     
     # Determine proper MIME type
     mime_map = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png", "webp": "webp", "gif": "gif", "bmp": "bmp"}
@@ -775,7 +786,7 @@ If you truly cannot find ANY medicines in the image (e.g., the image is not a pr
                 )
             
             print(f"[OCR] Successfully extracted {len(medicines)} medicines using {model_name}")
-            return {"medicines": medicines, "image_url": f"/uploads/prescriptions/{filename}"}
+            return {"medicines": medicines, "image_url": image_public_url}
             
         except HTTPException:
             raise
@@ -1011,25 +1022,22 @@ async def upload_voice(
     file: UploadFile = File(...),
 ):
     ext = file.filename.split(".")[-1] if file.filename else "wav"
-    # Save original temp file
+    # Save original to local temp for transcoding
     temp_filename = f"temp_{uuid.uuid4()}.{ext}"
     temp_path = os.path.join(UPLOAD_DIR, "voices", temp_filename)
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
     # Transcode to Strict IoT-Compatible WAV (Mono, 16kHz, 16-bit PCM)
-    # WAV is the most stable format for ESP32-audioI2S as it requires no sync-word hunting
     final_filename = f"{uuid.uuid4()}.wav"
     final_path = os.path.join(UPLOAD_DIR, "voices", final_filename)
-    
+
     audio_clip = None
     try:
         audio_clip = AudioFileClip(temp_path)
-        # Using 16000Hz Mono for perfect balance of quality and I2S stability
         audio_clip.write_audiofile(final_path, fps=16000, nbytes=2, codec='pcm_s16le')
         audio_clip.close()
         audio_clip = None
-        import time; time.sleep(0.5)  # Let Windows release file handles
         if os.path.exists(temp_path):
             os.remove(temp_path)
     except Exception as e:
@@ -1037,20 +1045,27 @@ async def upload_voice(
         if audio_clip is not None:
             try: audio_clip.close()
             except: pass
-            import time; time.sleep(0.5)
         if os.path.exists(temp_path):
             shutil.copy2(temp_path, final_path)
             try: os.remove(temp_path)
             except: pass
 
+    # Upload transcoded file to Supabase Storage
+    with open(final_path, "rb") as f:
+        file_bytes = f.read()
+    file_url = upload_to_supabase(file_bytes, final_filename, folder="voices", content_type="audio/wav")
+
+    # Clean up local temp
+    try: os.remove(final_path)
+    except: pass
+
     user_id = patient_id if patient_id else "test_user"
-    file_url = f"/uploads/voices/{final_filename}"
     conn = get_connection()
     cur = conn.cursor()
     try:
         vid = str(uuid.uuid4())
         cur.execute(
-            """INSERT INTO voice_profiles (id, user_id, patient_id, name, file_url, scheduled_time, days_of_week) 
+            """INSERT INTO voice_profiles (id, user_id, patient_id, name, file_url, scheduled_time, days_of_week)
                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (vid, user_id, user_id, name, file_url, scheduled_time, days_of_week or "everyday"),
         )
@@ -1126,43 +1141,40 @@ async def upload_music(
     temp_filename = f"temp_{uuid.uuid4()}.{ext}"
     temp_path = os.path.join(UPLOAD_DIR, "music", temp_filename)
 
-    # Save the uploaded file first
+    # Save the uploaded file to local temp for transcoding
     with open(temp_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Transcode to ESP32-compatible MP3: 128kbps, MONO, 44.1kHz
-    # Using ffmpeg directly for reliable mono conversion
+    # Transcode to ESP32-compatible MP3: 128kbps, MONO, 32kHz
     final_filename = f"{uuid.uuid4()}.mp3"
     final_path = os.path.join(UPLOAD_DIR, "music", final_filename)
 
     try:
         import subprocess
-        # Get ffmpeg path from moviepy's bundled copy (not in Windows PATH)
         try:
             import imageio_ffmpeg
             ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
         except ImportError:
-            ffmpeg_path = 'ffmpeg'  # Fallback to system PATH
-        
+            ffmpeg_path = 'ffmpeg'
+
         print(f"[Music] Using ffmpeg: {ffmpeg_path}")
         result = subprocess.run([
             ffmpeg_path, '-y', '-i', temp_path,
-            '-map_metadata', '-1',   # Strip absolutely all metadata
-            '-ac', '1',              # MONO (Crucial for non-PSRAM devices)
-            '-ar', '32000',          # 32kHz (Better balance for SD card speed)
-            '-b:a', '128k',          # 128kbps High Quality CBR
-            '-minrate', '128k',      # Force CBR
-            '-maxrate', '128k',      # Force CBR
+            '-map_metadata', '-1',
+            '-ac', '1',
+            '-ar', '32000',
+            '-b:a', '128k',
+            '-minrate', '128k',
+            '-maxrate', '128k',
             '-codec:a', 'libmp3lame',
-            '-write_xing', '0',      # CRITICAL: Disable Xing/Info header which breaks ESP32 decoders
-            '-id3v2_version', '0',   # No ID3 tags
+            '-write_xing', '0',
+            '-id3v2_version', '0',
             final_path
         ], capture_output=True, text=True, timeout=300)
-        
+
         if result.returncode == 0 and os.path.exists(final_path):
-            file_size = os.path.getsize(final_path)
             os.remove(temp_path)
-            print(f"[Music] Transcoded to strict 64kbps MONO MP3: {final_filename} ({file_size} bytes)")
+            print(f"[Music] Transcoded OK: {final_filename}")
         else:
             print(f"[Music] ffmpeg error (code {result.returncode}): {result.stderr[:300]}")
             shutil.copy2(temp_path, final_path)
@@ -1175,8 +1187,16 @@ async def upload_music(
             try: os.remove(temp_path)
             except: pass
 
+    # Upload transcoded file to Supabase Storage
+    with open(final_path, "rb") as f:
+        file_bytes = f.read()
+    file_url = upload_to_supabase(file_bytes, final_filename, folder="music", content_type="audio/mpeg")
+
+    # Clean up local temp
+    try: os.remove(final_path)
+    except: pass
+
     user_id = patient_id if patient_id else "test_user"
-    file_url = f"/uploads/music/{final_filename}"
     conn = get_connection()
     cur = conn.cursor()
     try:
@@ -1195,25 +1215,16 @@ async def upload_music(
 
 @app.get("/uploads/music/{filename}")
 def serve_music_file(filename: str):
-    """Explicitly serve music files to ESP32 to ensure stable streaming."""
-    filepath = os.path.join(UPLOAD_DIR, "music", filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Music file not found")
-    # FileResponse handles range headers and large files efficiently
-    return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
+    """Redirect to Supabase Storage public URL."""
+    public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(f"music/{filename}")
+    return RedirectResponse(url=public_url)
 
 
 @app.get("/uploads/voices/{filename}")
 def serve_voice_file(filename: str):
-    """Explicitly serve voice recording files with correct MIME type."""
-    filepath = os.path.join(UPLOAD_DIR, "voices", filename)
-    if not os.path.exists(filepath):
-        raise HTTPException(status_code=404, detail="Voice file not found")
-    # Detect MIME type based on extension
-    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'wav'
-    mime_map = {'wav': 'audio/wav', 'mp3': 'audio/mpeg', 'ogg': 'audio/ogg', 'm4a': 'audio/mp4'}
-    media_type = mime_map.get(ext, 'audio/wav')
-    return FileResponse(filepath, media_type=media_type, filename=filename)
+    """Redirect to Supabase Storage public URL."""
+    public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(f"voices/{filename}")
+    return RedirectResponse(url=public_url)
 
 
 @app.put("/music/{music_id}")
@@ -1260,15 +1271,25 @@ def delete_music(music_id: str):
 @app.get("/device/tts")
 def get_device_tts(text: str):
     """
-    Local proxy for TTS so ESP32 doesn't drop out from slow internet streams.
-    Caches the audio file based on the text hash.
+    TTS endpoint for ESP32. Generates audio via gTTS and uploads to Supabase.
+    Caches based on text hash — if already uploaded, returns the stored URL.
     """
     filename = f"tts_{hashlib.md5(text.encode()).hexdigest()}.mp3"
-    filepath = os.path.join(UPLOAD_DIR, "voices", filename)
-    if not os.path.exists(filepath):
-        tts = gTTS(text=text, lang="en", slow=False)
-        tts.save(filepath)
-    return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
+    # Check if already cached in Supabase by trying to get public URL
+    # (gTTS files are small; generate locally then upload)
+    local_path = os.path.join(UPLOAD_DIR, "voices", filename)
+    tts = gTTS(text=text, lang="en", slow=False)
+    tts.save(local_path)
+    with open(local_path, "rb") as f:
+        file_bytes = f.read()
+    try:
+        public_url = upload_to_supabase(file_bytes, filename, folder="voices", content_type="audio/mpeg")
+    except Exception:
+        # Already exists in Supabase — just get the URL
+        public_url = supabase.storage.from_(SUPABASE_BUCKET).get_public_url(f"voices/{filename}")
+    try: os.remove(local_path)
+    except: pass
+    return RedirectResponse(url=public_url)
 
 
 @app.get("/device/{user_id}")
@@ -1335,7 +1356,7 @@ def get_pending_actions(device_id: str):
 
         user_id = device["user_id"]
         actions = []
-        base_url = os.getenv("BASE_URL", f"http://{os.getenv('SERVER_IP','localhost')}:8000")
+        base_url = os.getenv("BASE_URL", "")
 
         # 1. Medicine reminders (priority 1 – highest)
         cur.execute(
@@ -1371,13 +1392,16 @@ def get_pending_actions(device_id: str):
                 continue
             if not _is_active_today(v.get("days_of_week", "everyday")):
                 continue
+            # file_url is a full Supabase URL if uploaded after migration,
+            # or a relative /uploads/... path for legacy data
+            voice_url = v['file_url'] if v['file_url'].startswith("http") else f"{base_url}{v['file_url']}"
             actions.append({
                 "type": "voice",
                 "priority": 2,
                 "time": v["scheduled_time"],
                 "data": {
                     "name": v["name"],
-                    "audio_url": f"{base_url}{v['file_url']}",
+                    "audio_url": voice_url,
                 },
                 # Legacy
                 "time_of_day": v["scheduled_time"],
@@ -1413,13 +1437,14 @@ def get_pending_actions(device_id: str):
         for m in cur.fetchall():
             if not _is_active_today(m.get("days_of_week", "everyday")):
                 continue
+            music_url = m['file_url'] if m['file_url'].startswith("http") else f"{base_url}{m['file_url']}"
             actions.append({
                 "type": "music",
                 "priority": 4,
                 "time": m["scheduled_time"],
                 "data": {
                     "title": m["title"],
-                    "audio_url": f"{base_url}{m['file_url']}",
+                    "audio_url": music_url,
                 },
                 # Legacy
                 "time_of_day": m["scheduled_time"],
@@ -1543,5 +1568,7 @@ def update_settings(user_id: str, update: SettingsUpdate):
         cur.close()
         conn.close()
 
-# Finally mount the generic uploads at the bottom
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
