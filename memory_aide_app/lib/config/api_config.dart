@@ -2,11 +2,7 @@
 // Change [baseUrl] when deploying to production.
 
 class ApiConfig {
-  static String get baseUrl {
-    // TODO: Replace YOUR_RENDER_URL after deploying to Render
-    const String productionUrl = 'https://YOUR_RENDER_URL.onrender.com';
-    return productionUrl;
-  }
+  static String get baseUrl => 'https://caresoul-backend.onrender.com';
 
   // Auth
   static String get loginUrl => '$baseUrl/login';

@@ -66,8 +66,7 @@
 const char* WIFI_SSID     = "OnePlus Nord";
 const char* WIFI_PASSWORD = "11111111";
 // PRODUCTION: Render URL (HTTPS, port 443).
-// Replace YOUR_RENDER_URL with the actual subdomain after deploying the backend.
-const char* API_BASE_URL  = "https://YOUR_RENDER_URL.onrender.com";
+const char* API_BASE_URL  = "https://caresoul-backend.onrender.com";
 const int   SERVER_PORT   = 443;
 const char* DEVICE_ID     = "ESP32-001";
 
