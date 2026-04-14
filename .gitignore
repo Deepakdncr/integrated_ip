@@ -122,4 +122,4 @@ app.*.symbols
 # Backend uploads and cache
 memory_aide_backend/uploads/
 memory_aide_backend/__pycache__/
-*.pyc
+*.pyc.idea/

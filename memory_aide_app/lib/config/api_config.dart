@@ -3,8 +3,7 @@
 
 class ApiConfig {
   static String get baseUrl {
-    // ✅ Production: Render backend URL
-    // Replace YOUR_RENDER_URL after deploying backend to Render
+    // TODO: Replace YOUR_RENDER_URL after deploying to Render
     const String productionUrl = 'https://YOUR_RENDER_URL.onrender.com';
     return productionUrl;
   }

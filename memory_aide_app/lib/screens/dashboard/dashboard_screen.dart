@@ -178,12 +178,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final habitsResult    = ApiService.getHabits(userId);
     final musicResult     = ApiService.getMusic(userId);
     final deviceResult    = ApiService.getDeviceStatus(userId);
+    final voicesResult    = ApiService.getVoices(userId);
 
     final results = await Future.wait([
       remindersResult,
       habitsResult,
       musicResult,
       deviceResult,
+      voicesResult,
     ]);
 
     // Patient profile is optional – may fail if test_user profile doesn't exist
@@ -202,15 +204,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final habits =
             (results[1] as List?)?.cast<Map<String, dynamic>>() ?? [];
         final music = (results[2] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        final voices = (results[4] as List?)?.cast<Map<String, dynamic>>() ?? [];
 
-        _upcomingEvent = _getUpcomingEvent(reminders, habits, music);
+        _upcomingEvent = _getUpcomingEvent(reminders, habits, music, voices);
         _isLoading = false;
       });
     }
   }
 
   Map<String, dynamic>? _getUpcomingEvent(List<Map<String, dynamic>> reminders,
-      List<Map<String, dynamic>> habits, List<Map<String, dynamic>> music) {
+      List<Map<String, dynamic>> habits, List<Map<String, dynamic>> music,
+      [List<Map<String, dynamic>> voices = const []]) {
     final now = TimeOfDay.now();
     final currentMinutes = now.hour * 60 + now.minute;
 
@@ -255,6 +259,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'type': 'Music',
         'icon': Icons.music_note_rounded,
         'color': const Color(0xFFEC4899),
+      });
+    }
+
+    for (var v in voices) {
+      if (v['is_active'] == false) continue;
+      final t = v['scheduled_time'] as String?;
+      if (t == null || t.isEmpty) continue;
+      allEvents.add({
+        'title': v['name'] ?? 'Voice Note',
+        'subtitle': 'Voice Announcement',
+        'time': t,
+        'type': 'Voice',
+        'icon': Icons.mic_rounded,
+        'color': const Color(0xFF7C3AED),
       });
     }
 

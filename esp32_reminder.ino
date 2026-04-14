@@ -83,6 +83,11 @@ const unsigned long POLL_INTERVAL_MS = 30000;
 #define I2S_LRC   26
 #define I2S_DOUT  25
 
+// MAX98357A Shutdown/Enable pin  (active HIGH = enabled, LOW = muted/shutdown)
+// Connect the SD pin of MAX98357A to this GPIO.
+// If you haven't wired SD pin, set this to -1 and the amp stays always-on.
+#define AMP_ENABLE_PIN  2
+
 // SD Card – default VSPI pins (most widely tested, most compatible)
 #define SD_CS     5
 // VSPI default: MOSI=23, MISO=19, SCK=18 (no need to define, Arduino default)
@@ -113,6 +118,22 @@ int lastCheckedHour   = -1;
 // Forward declarations
 void notifySOS(bool triggered);
 bool checkSOSRemoteStop();
+
+// ── Anti-pop helpers ──────────────────────────
+// Mute the amplifier BEFORE I2S transients occur, then unmute AFTER I2S is stable.
+void ampEnable(bool on) {
+  if (AMP_ENABLE_PIN < 0) return;          // not wired – skip
+  digitalWrite(AMP_ENABLE_PIN, on ? HIGH : LOW);
+  if (on) delay(50);   // 50ms settling time after power-up
+}
+
+// Play a short burst of digital silence so the I2S DMA buffer
+// contains only zeros when the decoder first starts sending real data.
+// This prevents the amp from amplifying stale buffer garbage as a pop.
+void flushI2Silence() {
+  audio.setVolume(0);      // digital mute
+  delay(60);               // let ~3+ DMA frames of zeros flow out
+}
 
 void sosNetworkTask(void * pvParameters) {
   unsigned long lastRemoteStopCheck = 0;
@@ -153,6 +174,12 @@ void setup() {
 
   // TLS: skip cert validation so HTTPS calls to Render work without bundling root CAs.
   secureClient.setInsecure();
+
+  // Init AMP enable/shutdown pin (mute amp during boot transients)
+  if (AMP_ENABLE_PIN >= 0) {
+    pinMode(AMP_ENABLE_PIN, OUTPUT);
+    digitalWrite(AMP_ENABLE_PIN, LOW);  // amp OFF during setup
+  }
 
   // Init SOS hardware
   pinMode(SOS_BUTTON_PIN, INPUT_PULLUP);
@@ -232,8 +259,12 @@ void setup() {
   // 40960 → library uses ~38KB usable RAM buffer (no PSRAM on this board).
   // Larger buffer = fewer SD read stalls = no INDATA_UNDERFLOW pops.
   audio.setBufsize(40960, 0);
-  int savedVol = preferences.getInt("volume", 18);
-  audio.setVolume(savedVol); // Dynamic volume (0-25)
+  audio.setVolume(0);  // Start muted – will ramp up when actually playing
+
+  // Enable amp now that I2S is configured and outputting silence
+  delay(100);  // let DMA fill with zeros
+  ampEnable(true);
+  Serial.println("[Audio] I2S initialized, amp enabled.");
 
   // Connect WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -391,9 +422,9 @@ void pollSchedule() {
   // --- Update Audio Settings (Volume/Language) ---
   if (doc.containsKey("settings")) {
     const char* volStr = doc["settings"]["volume"] | "medium";
-    int volLevel = 18;
-    if (strcmp(volStr, "low") == 0)       volLevel = 14;
-    else if (strcmp(volStr, "high") == 0) volLevel = 22;
+    int volLevel = 20;
+    if (strcmp(volStr, "low") == 0)       volLevel = 15;
+    else if (strcmp(volStr, "high") == 0) volLevel = 25;
 
     preferences.putInt("volume", volLevel);
     audio.setVolume(volLevel);
@@ -616,22 +647,34 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
         if (WiFi.status() == WL_CONNECTED && matched[i].ttsText.length() > 0) {
           Serial.printf("[Play] Streaming fallback: %s\n", matched[i].ttsText.c_str());
           int vol = preferences.getInt("volume", 18);
-          audio.setVolume(vol);
+          ampEnable(false);
+          audio.setVolume(0);
           audio.connecttohost(matched[i].ttsText.c_str());
+          delay(80);
+          ampEnable(true);
+          // Soft ramp up
+          for (int v = 1; v <= 10; v++) {
+            audio.setVolume((vol * v) / 10);
+            unsigned long rampEnd = millis() + 20;
+            while (millis() < rampEnd) { audio.loop(); }
+          }
           unsigned long startWait = millis();
           bool started = false;
           while (millis() - startWait < 12000) {
             audio.loop();
             checkSOSButton();
-            if (sosActive) { audio.stopSong(); return; }
+            if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
             if (audio.isRunning()) { started = true; break; }
           }
           if (!started) Serial.println("[Play] Stream fallback failed to start.");
           while (audio.isRunning()) {
             audio.loop();
             checkSOSButton();
-            if (sosActive) { audio.stopSong(); return; }
+            if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
           }
+          // Ramp down on stop
+          for (int v = 9; v >= 0; v--) { audio.setVolume((vol * v) / 10); delay(15); }
+          ampEnable(false); delay(30); ampEnable(true);
         } else {
           Serial.println("[Play] Offline + no valid cache – skipping.");
         }
@@ -641,29 +684,78 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
 
       Serial.printf("[Play] Found in SD cache: %s (%u bytes)\n", matched[i].filename.c_str(), fileSize);
       int repeatCount = (matched[i].type == "medicine" || matched[i].type == "habit" || matched[i].type == "voice") ? 2 : 1;
-      for (int r = 0; r < repeatCount; r++) {
-        int vol = preferences.getInt("volume", 18);
-        audio.setVolume(vol);
-        Serial.printf("[Play] Volume: %d, Iteration: %d\n", vol, r + 1);
+      int targetVol = preferences.getInt("volume", 18);
+
+      // ── Warm up the I2S/DMA pipeline on first use ──
+      // The very first connecttoSD() after a cold start can fail because the I2S
+      // peripheral hasn't fully initialised its DMA descriptors yet.
+      // We do a silent "dummy" open + immediate close to warm it up.
+      static bool i2sWarmedUp = false;
+      if (!i2sWarmedUp) {
+        audio.setVolume(0);
         audio.connecttoSD(matched[i].filename.c_str());
-        unsigned long startWait = millis();
+        delay(200);   // give decoder time to open + DMA to spin up
+        audio.stopSong();
+        delay(100);
+        i2sWarmedUp = true;
+        Serial.println("[Play] I2S warm-up done.");
+      }
+
+      for (int r = 0; r < repeatCount; r++) {
+        Serial.printf("[Play] Volume: %d, Iteration: %d\n", targetVol, r + 1);
+
         bool started = false;
-        while (millis() - startWait < 5000) {
-          audio.loop();
-          checkSOSButton();
-          if (sosActive) { audio.stopSong(); return; }
-          if (audio.isRunning()) { started = true; break; }
+        // ── Retry up to 3 times – first call can silently fail on some ESP32 variants ──
+        for (int attempt = 0; attempt < 3 && !started; attempt++) {
+          if (attempt > 0) {
+            Serial.printf("[Play] Retry attempt %d...\n", attempt + 1);
+            audio.stopSong();
+            delay(200);   // let I2S fully idle before next open
+          }
+
+          // Anti-pop: mute amp → start decoder → 150ms settle → unmute amp
+          ampEnable(false);
+          audio.setVolume(0);
+          audio.connecttoSD(matched[i].filename.c_str());
+          delay(150);          // ← increased from 80ms – gives DMA + decoder time to settle
+          ampEnable(true);
+
+          // Soft volume ramp: 0 → target over ~200ms
+          for (int v = 1; v <= 10; v++) {
+            audio.setVolume((targetVol * v) / 10);
+            unsigned long rampEnd = millis() + 20;
+            while (millis() < rampEnd) { audio.loop(); }
+          }
+
+          unsigned long startWait = millis();
+          while (millis() - startWait < 4000) {
+            audio.loop();
+            checkSOSButton();
+            if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
+            if (audio.isRunning()) { started = true; break; }
+          }
         }
+
         if (!started) {
-          Serial.println("[Play] ERROR: Audio failed to start.");
+          Serial.println("[Play] ERROR: Audio failed to start after 3 attempts.");
         }
         while (audio.isRunning()) {
           audio.loop();
           checkSOSButton();
-          if (sosActive) { audio.stopSong(); return; }
+          if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
         }
+
+        // ── Anti-pop on stop: ramp volume down → mute amp briefly ──
+        for (int v = 9; v >= 0; v--) {
+          audio.setVolume((targetVol * v) / 10);
+          delay(15);
+        }
+        ampEnable(false);
+        delay(30);
+        ampEnable(true);
+
         if (r < repeatCount - 1) {
-          for (int d = 0; d < 80; d++) {
+          for (int d = 0; d < 150; d++) {
             delay(10); checkSOSButton();
             if (sosActive) { audio.stopSong(); return; }
           }
@@ -672,24 +764,34 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
     } else if (WiFi.status() == WL_CONNECTED) {
       // Cache miss – stream from server
       Serial.printf("[Play] Cache miss – streaming: %s\n", matched[i].ttsText.c_str());
+      int vol = preferences.getInt("volume", 18);
       if (matched[i].type == "medicine" || matched[i].type == "habit") {
         String encoded = urlEncode(matched[i].ttsText);
         String ttsUrl  = String(API_BASE_URL) + "/device/tts?text=" + encoded;
         for (int r = 0; r < 2; r++) {
-          int vol = preferences.getInt("volume", 18);
-          audio.setVolume(vol);
+          ampEnable(false);
+          audio.setVolume(0);
           audio.connecttohost(ttsUrl.c_str());
+          delay(80);
+          ampEnable(true);
+          for (int v = 1; v <= 10; v++) {
+            audio.setVolume((vol * v) / 10);
+            unsigned long re = millis() + 20;
+            while (millis() < re) { audio.loop(); }
+          }
           unsigned long startWait = millis();
           while (!audio.isRunning() && (millis() - startWait < 8000)) {
             audio.loop();
             checkSOSButton();
-            if (sosActive) { audio.stopSong(); return; }
+            if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
           }
           while (audio.isRunning()) {
             audio.loop();
             checkSOSButton();
-            if (sosActive) { audio.stopSong(); return; }
+            if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
           }
+          for (int v = 9; v >= 0; v--) { audio.setVolume((vol * v) / 10); delay(15); }
+          ampEnable(false); delay(30); ampEnable(true);
           if (r == 0) {
             for (int d = 0; d < 300; d++) {
               delay(10); checkSOSButton();
@@ -698,24 +800,33 @@ void checkAndPlaySchedule(int currentHour, int currentMinute) {
           }
         }
       } else {
-        int vol = preferences.getInt("volume", 18);
-        audio.setVolume(vol);
         Serial.printf("[Play] Streaming URL: %s\n", matched[i].ttsText.c_str());
+        ampEnable(false);
+        audio.setVolume(0);
         audio.connecttohost(matched[i].ttsText.c_str());
+        delay(80);
+        ampEnable(true);
+        for (int v = 1; v <= 10; v++) {
+          audio.setVolume((vol * v) / 10);
+          unsigned long re = millis() + 20;
+          while (millis() < re) { audio.loop(); }
+        }
         unsigned long startWait = millis();
         bool started = false;
         while ((millis() - startWait < 12000)) {
           audio.loop();
           checkSOSButton();
-          if (sosActive) { audio.stopSong(); return; }
+          if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
           if (audio.isRunning()) { started = true; break; }
         }
         if (!started) Serial.println("[Play] ERROR: Stream failed to start.");
         while (audio.isRunning()) {
           audio.loop();
           checkSOSButton();
-          if (sosActive) { audio.stopSong(); return; }
+          if (sosActive) { ampEnable(false); audio.stopSong(); ampEnable(true); return; }
         }
+        for (int v = 9; v >= 0; v--) { audio.setVolume((vol * v) / 10); delay(15); }
+        ampEnable(false); delay(30); ampEnable(true);
       }
     } else {
       Serial.printf("[Play] ERROR: Audio not cached and offline – skipping.\n");
@@ -779,36 +890,69 @@ void downloadAudioFile(String url, String filename) {
     return;
   }
 
-  int totalBytes = http.getSize();
-  int bytesRead = 0;
-  uint8_t buff[1024];
+  int totalBytes = http.getSize();   // -1 if server sends no Content-Length
+  Serial.printf("[Cache] Content-Length: %d\n", totalBytes);
 
-  if (totalBytes > 0) {
-    WiFiClient * stream = http.getStreamPtr();
-    while (http.connected() && (bytesRead < totalBytes || totalBytes == -1)) {
-      size_t size = stream->available();
-      if (size) {
-        int c = stream->readBytes(buff, min(size, sizeof(buff)));
+  WiFiClient * stream = http.getStreamPtr();
+  int bytesRead = 0;
+  uint8_t buff[4096];                // 4KB buffer — 4× faster SD writes
+
+  const unsigned long OVERALL_TIMEOUT_MS = 60000;  // 60s max for entire download
+  const unsigned long STALL_TIMEOUT_MS   = 10000;  // 10s with zero bytes = abort
+  unsigned long downloadStart  = millis();
+  unsigned long lastDataTime   = millis();
+  int lastProgressLog = 0;
+
+  while (http.connected()) {
+    // ── Overall timeout ──
+    if (millis() - downloadStart > OVERALL_TIMEOUT_MS) {
+      Serial.println("[Cache] ABORT: Overall 60s timeout reached.");
+      break;
+    }
+
+    // ── Stall timeout (no data for 10s) ──
+    if (millis() - lastDataTime > STALL_TIMEOUT_MS) {
+      Serial.printf("[Cache] ABORT: No data for %lus. Stall detected.\n",
+                    STALL_TIMEOUT_MS / 1000);
+      break;
+    }
+
+    // ── Known length: done when all bytes received ──
+    if (totalBytes > 0 && bytesRead >= totalBytes) {
+      break;
+    }
+
+    size_t avail = stream->available();
+    if (avail) {
+      int toRead = min(avail, sizeof(buff));
+      int c = stream->readBytes(buff, toRead);
+      if (c > 0) {
         f.write(buff, c);
         bytesRead += c;
-        if (bytesRead % (100 * 1024) == 0) { // Every 100KB
+        lastDataTime = millis();
+
+        // Log progress every ~50KB
+        if (bytesRead / (50 * 1024) > lastProgressLog) {
+          lastProgressLog = bytesRead / (50 * 1024);
           Serial.printf("[Cache] Progress: %d / %d bytes\n", bytesRead, totalBytes);
         }
       }
-      delay(1);
+    } else {
+      delay(5);   // brief yield when no data available yet
     }
-  } else {
-    bytesRead = http.writeToStream(&f);
   }
 
   f.close();
   http.end();
 
+  unsigned long elapsed = millis() - downloadStart;
   if (bytesRead < 1024) {
-    Serial.printf("[Cache] FAILED: File too small (%d bytes). Deleting.\n", bytesRead);
+    Serial.printf("[Cache] FAILED: File too small (%d bytes, %lums). Deleting.\n",
+                  bytesRead, elapsed);
     SD.remove(filename);
   } else {
-    Serial.printf("[Cache] Saved to SD: %s (%d bytes)\n", filename.c_str(), bytesRead);
+    Serial.printf("[Cache] Saved to SD: %s (%d bytes in %lums)\n",
+                  filename.c_str(), bytesRead, elapsed);
   }
 }
 

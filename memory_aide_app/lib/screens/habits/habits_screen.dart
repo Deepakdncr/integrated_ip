@@ -177,6 +177,7 @@ class _HabitsScreenState extends State<HabitsScreen> {
     final titleCtrl = TextEditingController(text: presetTitle ?? '');
     final durationCtrl =
         TextEditingController(text: (presetDuration ?? 30).toString());
+    final repeatCountCtrl = TextEditingController(text: '2');
 
     // Parse preset time or default to 09:00
     int hour = 9, minute = 0;
@@ -266,6 +267,18 @@ class _HabitsScreenState extends State<HabitsScreen> {
                   },
                 ),
                 const SizedBox(height: 12),
+                TextField(
+                  controller: repeatCountCtrl,
+                  keyboardType: TextInputType.number,
+                  style: const TextStyle(fontSize: 17),
+                  decoration: const InputDecoration(
+                    labelText: 'Repeat Count',
+                    hintText: 'e.g. 2',
+                    prefixIcon: Icon(Icons.repeat_rounded, size: 22),
+                    helperText: 'How many times device will announce',
+                  ),
+                ),
+                const SizedBox(height: 12),
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -332,6 +345,7 @@ class _HabitsScreenState extends State<HabitsScreen> {
                             int.tryParse(durationCtrl.text.trim()) ?? 0,
                         'scheduled_time': timeStr,
                         'days_of_week': daysStr,
+                        'repeat_count': int.tryParse(repeatCountCtrl.text.trim()) ?? 2,
                       });
                       if (!context.mounted) return;
                       Navigator.pop(ctx);
