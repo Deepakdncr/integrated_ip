@@ -82,9 +82,13 @@ class AuthService {
           'password': password,
         }),
       );
-      if (response.statusCode == 200) return null;
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        await _saveSession(data);
+        return null;
+      }
       final data = jsonDecode(response.body);
-      return data['detail'] ?? 'Failed to send OTP.';
+      return data['detail'] ?? 'Registration failed.';
     } catch (e) {
       return 'Connection error. Is the server running?';
     }

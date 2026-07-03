@@ -1,14 +1,20 @@
-// API configuration for CareSoul app.
+ // API configuration for CareSoul app.
 // Change [baseUrl] when deploying to production.
 import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 
 class ApiConfig {
   static String get baseUrl {
-    if (kIsWeb) return 'http://10.97.7.17:8000';
-    // Use the laptop's Wi-Fi IP so physical Android/iOS devices can reach the backend.
-    if (Platform.isAndroid || Platform.isIOS) return 'http://10.97.7.17:8000';
-    return 'http://10.97.7.17:8000';
+    // Local development defaults:
+    // - Web: connects to the local machine.
+    // - Android emulator: 10.0.2.2 maps to host localhost.
+    // - Physical Android device: use your PC LAN IP.
+    // - Desktop/iOS: use localhost.
+    if (kIsWeb) return 'http://127.0.0.1:8000';
+    // Use your PC's local network IP for a real Android phone.
+    if (Platform.isAndroid) return 'http://10.100.2.17:8000';
+    if (Platform.isIOS) return 'http://127.0.0.1:8000';
+    return 'http://127.0.0.1:8000';
   }
 
   // Auth
@@ -31,7 +37,8 @@ class ApiConfig {
   static String remindersUrl(String userId) => '$baseUrl/reminders/$userId';
   static String get reminderCreateUrl => '$baseUrl/reminders';
   static String reminderUrl(String id) => '$baseUrl/reminders/$id';
-  static String remindersAllUrl(String userId) => '$baseUrl/reminders/all/$userId';
+  static String remindersAllUrl(String userId) =>
+      '$baseUrl/reminders/all/$userId';
 
   // Habits
   static String habitsUrl(String userId) => '$baseUrl/habits/$userId';

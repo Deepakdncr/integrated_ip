@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CareSoul – Live Reminder Speaker</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-primary: #0a0a1a;
+    --bg-card: rgba(255,255,255,0.04);
+    --border: rgba(255,255,255,0.08);
+    --accent: #6366f1;
+    --accent-glow: rgba(99,102,241,0.3);
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --text: #ffffff;
+    --text-dim: rgba(255,255,255,0.45);
+    --text-mid: rgba(255,255,255,0.7);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  /* Animated background */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; z-index: 0;
+    background:
+      radial-gradient(ellipse at 20% 50%, rgba(99,102,241,0.08) 0%, transparent 60%),
+      radial-gradient(ellipse at 80% 20%, rgba(139,92,246,0.06) 0%, transparent 50%),
+      radial-gradient(ellipse at 50% 90%, rgba(34,197,94,0.04) 0%, transparent 40%);
+  }
+
+  .container { position: relative; z-index: 1; max-width: 960px; margin: 0 auto; padding: 30px 20px; }
+
+  /* Header */
+  .header { text-align: center; margin-bottom: 30px; }
+  .header-logo { font-size: 42px; margin-bottom: 8px; }
+  .header h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+  .header h1 span { background: linear-gradient(135deg, #6366f1, #a78bfa); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; color: transparent; }
+  .header .tagline { color: var(--text-dim); font-size: 13px; margin-top: 4px; }
+
+  /* Connection bar */
+  .conn-bar {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 12px 18px; margin-bottom: 20px;
+  }
+  .conn-bar input {
+    flex: 1; background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 12px; color: white; font-size: 13px;
+    font-family: 'Inter', sans-serif;
+  }
+  .conn-bar input:focus { outline: none; border-color: var(--accent); }
+  .btn {
+    border: none; border-radius: 10px; padding: 10px 20px;
+    color: white; font-weight: 700; cursor: pointer; font-size: 13px;
+    font-family: 'Inter', sans-serif; transition: all 0.2s;
+  }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 20px var(--accent-glow); }
+  .btn-green { background: linear-gradient(135deg, #22c55e, #16a34a); }
+  .btn-green:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(34,197,94,0.3); }
+  .btn-green.pulsing { animation: btnPulse 1.5s ease infinite; }
+  @keyframes btnPulse {
+    0%,100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+    50% { box-shadow: 0 0 0 12px rgba(34,197,94,0); }
+  }
+
+  /* Status strip */
+  .status-strip {
+    display: flex; gap: 16px; justify-content: center; flex-wrap: wrap;
+    margin-bottom: 24px; font-size: 12px;
+  }
+  .status-item { display: flex; align-items: center; gap: 6px; color: var(--text-mid); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-green { background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,0.5); }
+  .dot-amber { background: var(--amber); }
+  .dot-red { background: var(--red); }
+
+  /* Now playing */
+  .now-playing {
+    display: none;
+    background: linear-gradient(135deg, rgba(99,102,241,0.12), rgba(139,92,246,0.08));
+    border: 1px solid rgba(99,102,241,0.3);
+    border-radius: 18px; padding: 28px; margin-bottom: 24px;
+    text-align: center;
+    animation: glowIn 0.5s ease;
+  }
+  .now-playing.active { display: block; }
+  @keyframes glowIn {
+    from { opacity: 0; transform: scale(0.95); box-shadow: none; }
+    to { opacity: 1; transform: scale(1); box-shadow: 0 0 40px var(--accent-glow); }
+  }
+  .np-label { font-size: 11px; font-weight: 700; letter-spacing: 2px; color: var(--accent); text-transform: uppercase; margin-bottom: 10px; }
+  .np-text { font-size: 22px; font-weight: 700; }
+  .np-time { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+  /* Sound wave animation */
+  .wave { display: flex; justify-content: center; align-items: center; gap: 4px; height: 40px; margin-top: 16px; }
+  .wave span {
+    width: 5px; border-radius: 3px;
+    background: linear-gradient(180deg, #6366f1, #a78bfa);
+    animation: waveAnim 0.8s ease-in-out infinite alternate;
+  }
+  .wave span:nth-child(1) { height: 12px; animation-delay: 0s; }
+  .wave span:nth-child(2) { height: 24px; animation-delay: 0.1s; }
+  .wave span:nth-child(3) { height: 36px; animation-delay: 0.2s; }
+  .wave span:nth-child(4) { height: 28px; animation-delay: 0.3s; }
+  .wave span:nth-child(5) { height: 18px; animation-delay: 0.15s; }
+  .wave span:nth-child(6) { height: 30px; animation-delay: 0.25s; }
+  .wave span:nth-child(7) { height: 14px; animation-delay: 0.05s; }
+  @keyframes waveAnim {
+    from { transform: scaleY(0.3); }
+    to { transform: scaleY(1); }
+  }
+
+  /* Upcoming list */
+  .section-title {
+    font-size: 14px; font-weight: 700; color: var(--text-mid);
+    text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .section-title::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+  .schedule-list { display: flex; flex-direction: column; gap: 10px; }
+  .schedule-item {
+    display: flex; align-items: center; gap: 16px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px 20px;
+    transition: all 0.3s;
+  }
+  .schedule-item:hover { border-color: rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); }
+  .schedule-item.past { opacity: 0.35; }
+  .schedule-item.next { border-color: var(--accent); background: rgba(99,102,241,0.06); }
+  .si-time {
+    font-size: 22px; font-weight: 800; min-width: 65px;
+    font-variant-numeric: tabular-nums;
+  }
+  .si-body { flex: 1; }
+  .si-type {
+    display: inline-block; font-size: 10px; font-weight: 700;
+    letter-spacing: 1.5px; text-transform: uppercase; padding: 3px 8px;
+    border-radius: 6px; margin-bottom: 4px;
+  }
+  .si-type.medicine { background: rgba(239,68,68,0.15); color: #f87171; }
+  .si-type.habit { background: rgba(34,197,94,0.15); color: #4ade80; }
+  .si-type.voice { background: rgba(59,130,246,0.15); color: #60a5fa; }
+  .si-type.music { background: rgba(245,158,11,0.15); color: #fbbf24; }
+  .si-text { font-size: 15px; font-weight: 600; }
+  .si-badge {
+    font-size: 11px; padding: 4px 10px; border-radius: 20px;
+    font-weight: 600;
+  }
+  .si-badge.upcoming { background: rgba(99,102,241,0.15); color: #818cf8; }
+  .si-badge.played { background: rgba(34,197,94,0.15); color: #4ade80; }
+  .si-badge.missed { background: rgba(239,68,68,0.15); color: #f87171; }
+
+  .clock {
+    font-size: 48px; font-weight: 800; text-align: center;
+    margin-bottom: 24px; font-variant-numeric: tabular-nums;
+    color: var(--text-mid);
+  }
+
+  .empty-state {
+    text-align: center; padding: 40px; color: var(--text-dim); font-size: 14px;
+  }
+
+  /* Audio enable overlay */
+  .audio-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,0.85); backdrop-filter: blur(10px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .audio-overlay.hidden { display: none; }
+  .ao-card {
+    background: rgba(255,255,255,0.06); border: 1px solid var(--border);
+    border-radius: 20px; padding: 40px; text-align: center; max-width: 400px;
+  }
+  .ao-icon { font-size: 60px; margin-bottom: 16px; }
+  .ao-title { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+  .ao-desc { font-size: 13px; color: var(--text-dim); margin-bottom: 24px; line-height: 1.5; }
+
+  .log-bar {
+    margin-top: 24px; padding: 12px 16px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; font-size: 11px; color: var(--text-dim);
+    font-family: 'Courier New', monospace;
+  }
+</style>
+</head>
+<body>
+
+<!-- Audio Enable Overlay – one click unlocks autoplay for all future plays -->
+<div class="audio-overlay" id="audioOverlay">
+  <div class="ao-card">
+    <div class="ao-icon">🔊</div>
+    <div class="ao-title">Enable Audio Playback</div>
+    <div class="ao-desc">Click below to allow CareSoul to automatically play reminder audio through your speakers. One click — then it's fully automatic.</div>
+    <button class="btn btn-green pulsing" onclick="unlockAudio()" style="font-size:16px; padding: 14px 36px;">
+      🔊 Enable & Start Monitoring
+    </button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="header">
+    <div class="header-logo">💊</div>
+    <h1>Care<span>Soul</span> Live Monitor</h1>
+    <p class="tagline">ESP32 IoT Reminder System – Audio Output via Network Speaker</p>
+  </div>
+
+  <div class="conn-bar">
+    <span style="font-size:13px; color:var(--text-dim); white-space:nowrap;">Backend IP:</span>
+    <input id="serverIP" type="text" value="10.97.7.17" placeholder="e.g. 10.97.7.17">
+    <button class="btn btn-primary" onclick="startMonitor()">▶ Connect</button>
+  </div>
+
+  <div class="status-strip">
+    <div class="status-item"><div class="dot" id="dotBackend"></div> <span id="lblBackend">Backend: checking…</span></div>
+    <div class="status-item"><div class="dot" id="dotAudio"></div> <span id="lblAudio">Audio: locked</span></div>
+    <div class="status-item"><div class="dot" id="dotPoll"></div> <span id="lblPoll">Poll: waiting</span></div>
+  </div>
+
+  <div class="clock" id="clock">--:--:--</div>
+
+  <!-- Now Playing Banner -->
+  <div class="now-playing" id="nowPlaying">
+    <div class="np-label">🔊 NOW PLAYING</div>
+    <div class="np-text" id="npText">—</div>
+    <div class="np-time" id="npTime"></div>
+    <div class="wave">
+      <span></span><span></span><span></span><span></span>
+      <span></span><span></span><span></span>
+    </div>
+  </div>
+
+  <div class="section-title">Upcoming Reminders</div>
+  <div class="schedule-list" id="scheduleList">
+    <div class="empty-state">Connecting to backend…</div>
+  </div>
+
+  <div class="log-bar" id="logBar">[ ] Waiting for connection…</div>
+</div>
+
+<script>
+  // ── State ──
+  let serverIP = '10.97.7.17';
+  let pollTimer = null;
+  let audioUnlocked = false;
+  let audioCtx = null;
+  let actions = [];
+  let playedMinutes = new Set();  // track which minutes we've already played
+
+  // ── Preloaded silent buffer to keep AudioContext alive ──
+  function unlockAudio() {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Play a tiny silent buffer to fully unlock autoplay
+    const buf = audioCtx.createBuffer(1, 1, 22050);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(0);
+
+    // Also create and play a silent HTML5 audio to unlock that path
+    const silentAudio = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=");
+    silentAudio.volume = 0;
+    silentAudio.play().catch(()=>{});
+
+    audioUnlocked = true;
+    document.getElementById('audioOverlay').classList.add('hidden');
+    document.getElementById('dotAudio').className = 'dot dot-green';
+    document.getElementById('lblAudio').textContent = 'Audio: enabled ✓';
+    log('Audio unlocked – reminders will play automatically');
+
+    startMonitor();
+  }
+
+  function log(msg) {
+    const ts = new Date().toLocaleTimeString();
+    document.getElementById('logBar').textContent = `[${ts}] ${msg}`;
+  }
+
+  // ── Clock ──
+  setInterval(() => {
+    document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+  }, 200);
+
+  // ── Polling ──
+  function startMonitor() {
+    serverIP = document.getElementById('serverIP').value.trim();
+    if (pollTimer) clearInterval(pollTimer);
+    poll();
+    pollTimer = setInterval(poll, 3000); // poll every 3 seconds for responsiveness
+    log('Monitoring started – polling every 3s');
+  }
+
+  async function poll() {
+    try {
+      const resp = await fetch(`http://${serverIP}:8000/device/pending/ESP32-001`, {signal: AbortSignal.timeout(5000)});
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      actions = data.actions || [];
+
+      document.getElementById('dotBackend').className = 'dot dot-green';
+      document.getElementById('lblBackend').textContent = `Backend: connected (${actions.length} actions)`;
+      document.getElementById('dotPoll').className = 'dot dot-green';
+      document.getElementById('lblPoll').textContent = `Poll: ${new Date().toLocaleTimeString()}`;
+
+      renderSchedule();
+      checkAndPlay();
+    } catch (e) {
+      document.getElementById('dotBackend').className = 'dot dot-red';
+      document.getElementById('lblBackend').textContent = 'Backend: offline';
+      log('Error: ' + e.message);
+    }
+  }
+
+  // ── Render upcoming schedule ──
+  function renderSchedule() {
+    const list = document.getElementById('scheduleList');
+    if (actions.length === 0) {
+      list.innerHTML = '<div class="empty-state">No reminders scheduled. Add some in the Flutter app.</div>';
+      return;
+    }
+
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+
+    // Sort by time
+    const sorted = [...actions].sort((a, b) => {
+      const ta = parseTime(a.time || a.time_of_day || '');
+      const tb = parseTime(b.time || b.time_of_day || '');
+      return ta - tb;
+    });
+
+    let nextFound = false;
+    list.innerHTML = sorted.map(action => {
+      const timeStr = action.time || action.time_of_day || '??:??';
+      const type = action.type || 'medicine';
+      const data = action.data || action;
+      const actionMin = parseTime(timeStr);
+      const text = getDisplayText(type, data);
+
+      let cls = '';
+      let badge = '';
+      if (actionMin < nowMin) {
+        if (playedMinutes.has(actionMin)) {
+          cls = 'past'; badge = '<span class="si-badge played">✓ Played</span>';
+        } else {
+          cls = 'past'; badge = '<span class="si-badge missed">Passed</span>';
+        }
+      } else if (actionMin === nowMin) {
+        cls = 'next'; badge = '<span class="si-badge played">🔊 Playing</span>';
+      } else if (!nextFound) {
+        nextFound = true;
+        cls = 'next'; badge = '<span class="si-badge upcoming">⏳ Next</span>';
+      } else {
+        badge = '<span class="si-badge upcoming">Upcoming</span>';
+      }
+
+      return `<div class="schedule-item ${cls}">
+        <div class="si-time">${timeStr.substring(0,5)}</div>
+        <div class="si-body">
+          <div class="si-type ${type}">${type}</div>
+          <div class="si-text">${text}</div>
+        </div>
+        ${badge}
+      </div>`;
+    }).join('');
+  }
+
+  function parseTime(t) {
+    if (!t || t.length < 5) return -1;
+    return parseInt(t.substring(0,2)) * 60 + parseInt(t.substring(3,5));
+  }
+
+  function getDisplayText(type, data) {
+    if (type === 'medicine') {
+      const med = data.medicine_name || 'medicine';
+      const dose = data.dosage || '';
+      return `Take ${med}${dose ? ' – ' + dose : ''}`;
+    } else if (type === 'habit') {
+      return data.message || data.title || 'Routine reminder';
+    } else if (type === 'voice') {
+      return 'Voice message';
+    } else if (type === 'music') {
+      return 'Music therapy session';
+    }
+    return 'Reminder';
+  }
+
+  // ── Auto-play at the right time ──
+  function checkAndPlay() {
+    if (!audioUnlocked) return;
+    const now = new Date();
+    const nowMin = now.getHours() * 60 + now.getMinutes();
+
+    for (const action of actions) {
+      const timeStr = action.time || action.time_of_day || '';
+      const actionMin = parseTime(timeStr);
+      if (actionMin < 0) continue;
+
+      if (actionMin === nowMin && !playedMinutes.has(actionMin)) {
+        playedMinutes.add(actionMin);
+        playAction(action);
+        return; // play one at a time
+      }
+    }
+  }
+
+  async function playAction(action) {
+    const type = action.type || 'medicine';
+    const data = action.data || action;
+    const text = getPlayText(type, data);
+
+    // Show Now Playing
+    document.getElementById('nowPlaying').classList.add('active');
+    document.getElementById('npText').textContent = text;
+    document.getElementById('npTime').textContent = 'Triggered at ' + new Date().toLocaleTimeString();
+    log('🔊 PLAYING: ' + text);
+    renderSchedule();
+
+    // Build Audio URL
+    let audioUrl;
+    if (type === 'music' || type === 'voice') {
+      // The backend returns the URL as `audio_url` inside `data`
+      if (data.audio_url) {
+        audioUrl = data.audio_url; // This already has the http://... format from the backend
+      } else {
+        // Fallback TTS
+        const encodedText = encodeURIComponent(text);
+        audioUrl = `http://${serverIP}:8000/device/tts?text=${encodedText}`;
+      }
+    } else {
+      const encodedText = encodeURIComponent(text);
+      audioUrl = `http://${serverIP}:8000/device/tts?text=${encodedText}`;
+    }
+
+    // Play audio (repeat twice for TTS, once for music/voice)
+    const playCount = (type === 'music' || type === 'voice') ? 1 : 2;
+    for (let i = 0; i < playCount; i++) {
+        try {
+            await playAudioUrl(audioUrl);
+            if (i < playCount - 1) await sleep(1500); // pause between repeats
+        } catch(e) {
+            log('Play error: ' + e.message);
+        }
+    }
+
+    // Keep "Now Playing" visible for 3 more seconds, then hide
+    setTimeout(() => {
+      document.getElementById('nowPlaying').classList.remove('active');
+      renderSchedule();
+    }, 3000);
+  }
+
+  function getPlayText(type, data) {
+    if (type === 'medicine') {
+      const med = data.medicine_name || 'medicine';
+      const dose = data.dosage || '';
+      return `Time to take ${med}${dose ? ', ' + dose : ''}`;
+    } else if (type === 'habit') {
+      return data.message || `Time for ${data.title || 'your routine'}`;
+    } else if (type === 'voice') {
+      return 'You have a voice message';
+    } else if (type === 'music') {
+      return 'Time for your music therapy';
+    }
+    return 'Reminder';
+  }
+
+  function playAudioUrl(url) {
+    return new Promise((resolve, reject) => {
+      const a = new Audio(url);
+      a.volume = 1.0;
+      a.onended = resolve;
+      a.onerror = (e) => reject(new Error('Audio load failed'));
+      a.play().then(() => {
+        log('🔊 Audio playing through speakers...');
+      }).catch(reject);
+    });
+  }
+
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+</script>
+</body>
+</html>

@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Depends, Header, F
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 import psycopg2
 import psycopg2.extras
 import uuid
@@ -18,6 +18,9 @@ import shutil
 import base64
 import json
 import random
+import socket
+import threading
+import time
 from openai import OpenAI
 from datetime import datetime, timedelta
 from typing import Optional
@@ -120,25 +123,26 @@ def verify_token(authorization: str = Header(None)) -> dict:
 # ============================================================
 
 class AuthRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 class RegisterRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
 
 class RegisterVerifyRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
     otp: str
 
 class ForgotPasswordRequest(BaseModel):
-    email: str
+    email: EmailStr
 
 class ResetPasswordRequest(BaseModel):
-    email: str
+    email: EmailStr
     otp: str
     new_password: str
+
 
 
 class PatientProfileUpdate(BaseModel):
@@ -215,8 +219,91 @@ class SettingsUpdate(BaseModel):
 
 
 # ============================================================
-# STARTUP – CREATE TABLES
+# STARTUP / SHUTDOWN – DB TABLES + UDP BEACON
 # ============================================================
+
+# UDP Beacon: broadcast 'CARESOUL:<ip>:8000' every 3 seconds so the ESP32
+# can auto-discover the backend IP without any hardcoding.
+_BEACON_PORT    = 55442
+_beacon_running = False
+_beacon_thread  = None
+
+
+def _get_local_ip() -> str:
+    """
+    Find the best LAN IP to broadcast via beacon.
+    Skips loopback (127.x), VPN/Hamachi (172.28.x, 172.29.x etc outside
+    RFC-1918 private LAN ranges), and Docker bridge IPs.
+    Prefers 10.x.x.x and 192.168.x.x (typical WiFi/LAN ranges).
+    """
+    import socket, struct
+    candidates = []
+    try:
+        # Get all IPs bound on this machine
+        hostname = socket.gethostname()
+        all_ips = socket.getaddrinfo(hostname, None, socket.AF_INET)
+        for item in all_ips:
+            ip = item[4][0]
+            if ip.startswith("127."):
+                continue  # skip loopback
+            # Accept RFC-1918 LAN ranges only:
+            #   10.0.0.0/8,  192.168.0.0/16,  172.16.0.0/12 (172.16–172.31)
+            parts = ip.split(".")
+            if ip.startswith("10."):
+                candidates.insert(0, ip)   # highest priority (common WiFi)
+            elif ip.startswith("192.168."):
+                candidates.insert(0, ip)
+            elif ip.startswith("172.") and 16 <= int(parts[1]) <= 31:
+                candidates.append(ip)      # lower priority (could be Docker)
+    except Exception:
+        pass
+
+    if candidates:
+        # print(f"[Beacon] IP candidates: {candidates} → using {candidates[0]}")
+        return candidates[0]
+
+    # Absolute fallback: outbound-route method (may pick VPN on some systems)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+def _beacon_loop():
+    """Background thread: broadcast our IP every 3 seconds."""
+    global _beacon_running
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    while _beacon_running:
+        try:
+            ip  = _get_local_ip()
+            msg = f"CARESOUL:{ip}:8000".encode()
+            sock.sendto(msg, ("255.255.255.255", _BEACON_PORT))
+        except Exception as e:
+            print(f"[Beacon] Send error: {e}")
+        time.sleep(3)
+    sock.close()
+    print("[Beacon] Stopped.")
+
+
+def _start_beacon():
+    global _beacon_running, _beacon_thread
+    _beacon_running = True
+    _beacon_thread  = threading.Thread(target=_beacon_loop, daemon=True)
+    _beacon_thread.start()
+    print(f"[Beacon] Broadcasting CARESOUL:<ip>:8000 on UDP port {_BEACON_PORT} every 3s")
+
+
+def _stop_beacon():
+    global _beacon_running
+    _beacon_running = False
+
+
 
 @app.on_event("startup")
 def create_tables():
@@ -382,6 +469,13 @@ def create_tables():
     cur.close()
     conn.close()
     print("[OK] CareSoul database tables ready")
+    # Start UDP beacon so ESP32 can auto-discover our IP
+    _start_beacon()
+
+
+@app.on_event("shutdown")
+def shutdown_event():
+    _stop_beacon()
 
 
 # ============================================================
@@ -402,30 +496,32 @@ async def request_register_otp(req: RegisterRequest):
         if cur.fetchone():
             raise HTTPException(status_code=400, detail="Email already registered.")
 
-        otp_code = str(random.randint(100000, 999999))
-        print(f"\n==============================================")
-        print(f"   [DEMO MODE] OTP FOR {req.email} IS: {otp_code}   ")
-        print(f"==============================================\n")
-
-        # Send Real Email
-        message = MessageSchema(
-            subject="CareSoul account - Verification Code",
-            recipients=[req.email],
-            body=f"Welcome to CareSoul! Your account verification code is: {otp_code}",
-            subtype=MessageType.plain
-        )
-        try:
-            await fm.send_message(message)
-        except Exception as e:
-            print("Email sending failed:", str(e))
-            raise HTTPException(status_code=500, detail="Could not send email OTP.")
-
+        user_id = str(uuid.uuid4())
         cur.execute(
-            "INSERT INTO otps (id, identifier, otp_code, expires_at) VALUES (%s, %s, %s, CURRENT_TIMESTAMP + INTERVAL '10 minutes')",
-            (str(uuid.uuid4()), req.email, otp_code)
+            "INSERT INTO users (id, email, password_hash, is_verified) VALUES (%s, %s, %s, TRUE)",
+            (user_id, req.email, hash_password(req.password)),
         )
+
+        patient_id = str(uuid.uuid4())
+        cur.execute(
+            "INSERT INTO patient_profiles (id, user_id, name, age) VALUES (%s, %s, %s, %s)",
+            (patient_id, user_id, "Patient", 0),
+        )
+
+        device_id = str(uuid.uuid4())
+        cur.execute(
+            "INSERT INTO device_status (id, user_id) VALUES (%s, %s)",
+            (device_id, user_id),
+        )
+
         conn.commit()
-        return {"message": "OTP sent successfully."}
+        token = create_token(user_id, req.email)
+        return {
+            "message": "Registration successful",
+            "token": token,
+            "user_id": user_id,
+            "patient_id": patient_id
+        }
     finally:
         cur.close()
         conn.close()
@@ -1303,6 +1399,37 @@ def get_device_tts(text: str, lang: str = "en"):
             print(f"[TTS] gTTS failed for lang={lang}: {e}. Falling back to English.")
             tts = gTTS(text=text, lang="en", slow=False)
             tts.save(filepath)
+
+        # ── Boost volume: gTTS outputs quiet 24kHz/64kbps audio.
+        # Re-encode with ffmpeg: loudnorm + 6dB boost → 32kHz/128kbps MONO.
+        # This makes the voice much louder and clearer on the MAX98357A speaker.
+        try:
+            import subprocess, shutil as _shutil
+            try:
+                import imageio_ffmpeg
+                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+            except ImportError:
+                ffmpeg_path = "ffmpeg"
+            boosted_path = filepath + "_boosted.mp3"
+            result = subprocess.run([
+                ffmpeg_path, "-y", "-i", filepath,
+                "-af", "loudnorm=I=-14:TP=-3:LRA=7,volume=6dB",
+                "-ac", "1",           # mono
+                "-ar", "32000",       # 32kHz – good balance of quality vs ESP32 speed
+                "-b:a", "128k",       # 128kbps – clear voice
+                "-codec:a", "libmp3lame",
+                "-write_xing", "0",   # no Xing header – ESP32 decoder compatibility
+                "-id3v2_version", "0",
+                boosted_path
+            ], capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and os.path.exists(boosted_path):
+                os.replace(boosted_path, filepath)
+                print(f"[TTS] Boosted & normalized: {filename}")
+            else:
+                print(f"[TTS] ffmpeg boost failed (code {result.returncode}), using raw gTTS file.")
+        except Exception as boost_err:
+            print(f"[TTS] Volume boost skipped ({boost_err}), using raw gTTS file.")
+
     return FileResponse(filepath, media_type="audio/mpeg", filename=filename)
 
 

@@ -3,7 +3,7 @@ import '../../services/auth_service.dart';
 import '../../widgets/care_soul_logo.dart';
 import '../../config/theme.dart';
 import 'login_screen.dart';
-import 'otp_verification_screen.dart';
+import '../dashboard/dashboard_screen.dart';
 
 /// Registration screen – caregiver account creation.
 class RegisterScreen extends StatefulWidget {
@@ -52,16 +52,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     if (!mounted) return;
     if (err == null) {
-      Navigator.push(
+      Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (_) => OtpVerificationScreen(
-            email: _emailCtrl.text.trim(),
-            password: _passCtrl.text.trim(),
-          ),
-        ),
+        MaterialPageRoute(builder: (_) => const DashboardScreen()),
       );
-      setState(() => _loading = false);
     } else {
       setState(() {
         _error = err;
